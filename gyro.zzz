@@ -2,7 +2,7 @@ pkgs:
   Zig-SX:
     description: S-Expression Reader/Writer
     source_url: https://github.com/bcrist/Zig-SX
-    version: 1.0
+    version: 1.0.1
     root: sx.zig
     tags:
     files:

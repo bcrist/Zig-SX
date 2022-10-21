@@ -51,9 +51,9 @@ pub fn Reader(comptime InnerReader: type) type {
         fn consumeByte(self: *Self) !?u8 {
             var b = self.next_byte;
             if (b == null) {
-                b = self.inner.readByte() catch |err| blk: {
+                b = self.inner.readByte() catch |err| {
                     if (err == error.EndOfStream) {
-                        break :blk null;
+                        return null;
                     } else {
                         return err;
                     }
