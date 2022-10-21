@@ -1,0 +1,6 @@
+id: zm3tnjlzl4h7ciot3ffx7i9xigq2pmimgqpw5kgveaoea3t4
+name: Zig-SX
+main: sx.zig
+license: MIT
+description: S-Expression Reader/Writer
+dependencies:
