@@ -473,7 +473,7 @@ pub const TokenContext = struct {
 
     pub fn printForFile(self: TokenContext, source: *std.fs.File, print_writer: anytype, comptime max_line_width: usize) !void {
         const originalPos = try source.getPos();
-        defer source.seekTo(originalPos);
+        errdefer source.seekTo(originalPos) catch {}; // best effort not to change file position in case of error
 
         var offset = self.prev_line_offset;
         var line_number = self.start_line_number;
@@ -481,8 +481,9 @@ pub const TokenContext = struct {
             line_number -= 1;
         }
 
-        source.seekTo(self.prev_line_offset);
-        var file_reader = std.io.bufferedReader(source.reader());
+        try source.seekTo(self.prev_line_offset);
+        var br = std.io.bufferedReader(source.reader());
+        var file_reader = br.reader();
         var line_buf: [max_line_width + 1]u8 = undefined;
         var line_length: usize = undefined;
         while (try readFileLine(file_reader, &line_buf, &line_length)) |line| {
@@ -499,10 +500,12 @@ pub const TokenContext = struct {
             line_number += 1;
             offset += line_length + 1;
         }
+
+        try source.seekTo(originalPos);
     }
 
     fn readFileLine(file_reader: anytype, buffer: []u8, line_length: *usize) !?[]u8 {
-        var line = file_reader.readUntilDelimiterOrEof(&buffer, '\n') catch |e| switch (e) {
+        var line = file_reader.readUntilDelimiterOrEof(buffer, '\n') catch |e| switch (e) {
             error.StreamTooLong => {
                 var length = buffer.len;
 
@@ -520,7 +523,7 @@ pub const TokenContext = struct {
             },
             else => return e,
         };
-        line_length.* = line.len;
+        line_length.* = (line orelse "").len;
         return line;
     }
 
