@@ -431,7 +431,7 @@ pub fn Reader(comptime InnerReader: type) type {
             if (self.state == .unknown) {
                 try self.read();
             }
-            return .{
+            return TokenContext {
                 .prev_line_offset = self.token_start_ctx.prev_line_offset,
                 .start_line_number = self.token_start_ctx.line_number,
                 .start_offset = self.token_start_ctx.offset,
