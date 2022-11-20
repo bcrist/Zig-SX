@@ -61,7 +61,7 @@ pub fn Writer(comptime InnerWriter: type) type {
             self.first_in_group = true;
         }
 
-        pub fn close(self: *Self) !bool {
+        pub fn close(self: *Self) !void {
             if (self.compact_state.items.len > 0) {
                 if (!self.compact_state.pop() and !self.first_in_group) {
                     try self.inner.writeByte('\n');
@@ -70,16 +70,14 @@ pub fn Writer(comptime InnerWriter: type) type {
                     }
                 }
                 try self.inner.writeByte(')');
-                self.first_in_group = false;
-                return true;
-            } else {
-                self.first_in_group = false;
-                return false;
             }
+            self.first_in_group = false;
         }
 
         pub fn done(self: *Self) !void {
-            while (try self.close()) {}
+            while (self.compact_state.items.len > 0) {
+                try self.close();
+            }
         }
 
         pub fn setCompact(self: *Self, compact: bool) void {
