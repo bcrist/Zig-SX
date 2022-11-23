@@ -19,6 +19,7 @@ pub fn Reader(comptime InnerReader: type) type {
         inner: InnerReader,
         next_byte: ?u8,
         token: std.ArrayList(u8),
+        compact: bool,
         state: State,
         ctx: ContextData,
         line_offset: usize,
@@ -36,6 +37,7 @@ pub fn Reader(comptime InnerReader: type) type {
                 .inner = inner_reader,
                 .next_byte = null,
                 .token = std.ArrayList(u8).init(allocator),
+                .compact = true,
                 .state = .unknown,
                 .ctx = .{},
                 .line_offset = 0,
@@ -70,13 +72,22 @@ pub fn Reader(comptime InnerReader: type) type {
             self.ctx.offset -= 1;
         }
 
-        fn skipWhitespace(self: *Self) !void {
+        fn skipWhitespace(self: *Self, include_newlines: bool) !void {
+            if (include_newlines) {
+                self.compact = true;
+            }
             while (try self.consumeByte()) |b| {
                 switch (b) {
                     '\n' => {
-                        self.ctx.line_number += 1;
-                        self.ctx.prev_line_offset = self.line_offset;
-                        self.line_offset = self.ctx.offset;
+                        if (include_newlines) {
+                            self.ctx.line_number += 1;
+                            self.ctx.prev_line_offset = self.line_offset;
+                            self.line_offset = self.ctx.offset;
+                            self.compact = false;
+                        } else {
+                            self.putBackByte(b);
+                            return;
+                        }
                     },
                     33...255 => {
                         self.putBackByte(b);
@@ -133,12 +144,12 @@ pub fn Reader(comptime InnerReader: type) type {
         }
 
         fn read(self: *Self) !void {
-            try self.skipWhitespace();
+            try self.skipWhitespace(true);
             self.token_start_ctx = self.ctx;
             if (try self.consumeByte()) |b| {
                 switch (b) {
                     '(' => {
-                        try self.skipWhitespace();
+                        try self.skipWhitespace(false);
                         self.val_start_ctx = self.ctx;
                         if (try self.consumeByte()) |q| {
                             if (q == '"') {
@@ -171,6 +182,13 @@ pub fn Reader(comptime InnerReader: type) type {
             }
         }
 
+        pub fn isCompact(self: *Self) !bool {
+            if (self.state == .unknown) {
+                try self.read();
+            }
+            return self.compact;
+        }
+
         pub fn open(self: *Self) !bool {
             if (self.state == .unknown) {
                 try self.read();
@@ -180,6 +198,7 @@ pub fn Reader(comptime InnerReader: type) type {
                 if (self.token.items.len > 0) {
                     self.token_start_ctx = self.val_start_ctx;
                     self.state = .val;
+                    self.compact = true;
                 } else {
                     self.state = .unknown;
                 }
