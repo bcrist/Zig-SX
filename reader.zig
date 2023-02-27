@@ -378,6 +378,29 @@ pub fn Reader(comptime InnerReader: type) type {
             return try self.anyBoolean() orelse error.SExpressionSyntaxError;
         }
 
+        pub fn anyEnum(self: *Self, comptime T: type) !?T {
+            if (self.state == .unknown) {
+                try self.read();
+            }
+
+            if (self.state != .val) {
+                return null;
+            }
+
+            for (std.enums.values(T)) |e| {
+                if (std.mem.eql(u8, self.token.items, @tagName(e))) {
+                    self.state = .unknown;
+                    return e;
+                }
+            }
+
+            return null;
+        }
+
+        pub fn requireAnyEnum(self: *Self, comptime T: type) !T {
+            return try self.anyEnum(T) orelse error.SExpressionSyntaxError;
+        }
+
         pub fn anyFloat(self: *Self, comptime T: type) !?T {
             if (self.state == .unknown) {
                 try self.read();

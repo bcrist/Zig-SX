@@ -133,6 +133,10 @@ pub fn Writer(comptime InnerWriter: type) type {
             try self.inner.writeAll(str);
         }
 
+        pub fn tag(self: *Self, val: anytype) !void {
+            return self.string(@tagName(val));
+        }
+
         pub fn printValue(self: *Self, comptime format: []const u8, args: anytype) !void {
             var buf: [1024]u8 = undefined;
             try self.string(std.fmt.bufPrint(&buf, format, args) catch |e| switch (e) {
