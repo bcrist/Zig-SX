@@ -6,6 +6,35 @@ Ideal for human-readable configuration or data files containing lots of compound
 
 Parsing and writing is always done interactively with the user program; there is no intermediate "document" representation.
 
+## Library Usage
+This library is designed to be used with the Zig package manager.  To use it, add a `build.zig.zon` file next to your `build.zig` file:
+```zig
+.{
+    .name = "Your Project Name",
+    .version = "0.0.0",
+    .dependencies = .{
+        .@"Zig-SX" = .{
+            .url = "https://github.com/bcrist/Zig-SX/archive/xxxxxx.tar.gz",
+        },
+    },
+}
+```
+Replace `xxxxxx` with the full commit hash for the version of the library you want to use.  Then in your `build.zig` file you can get a reference to the package:
+```zig
+const zig_sx = b.dependency("Zig-SX", .{});
+```
+If you want to both read and write S-Expression files, add the `sx` module as a dependency:
+```
+const exe = b.addExecutable(.{
+    .name = "my_exe_name",
+    .root_source_file = .{ .path = "my_main_file.zig" },
+    .target = b.standardTargetOptions(.{}),
+    .optimize = b.standardOptimizeOption(.{}),
+});
+exe.addModule("sx", zig_sx.module("sx"));
+```
+Alternatively, you can replace `sx` with `sx-reader` or `sx-writer` if you only need one or the other.
+
 ## Reader Example
 
     const std = @import("std");

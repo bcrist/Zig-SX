@@ -1,5 +1,5 @@
 const std = @import("std");
-const sx = @import("sx.zig");
+const sx = @import("sx");
 const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
 

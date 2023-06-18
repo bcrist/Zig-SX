@@ -1,2 +1,2 @@
-pub usingnamespace @import("reader.zig");
-pub usingnamespace @import("writer.zig");
+pub usingnamespace @import("sx-reader");
+pub usingnamespace @import("sx-writer");
