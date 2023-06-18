@@ -114,7 +114,7 @@ Then in your `build.zig` file you can get a reference to the package:
 const zig_sx = b.dependency("Zig-SX", .{});
 ```
 If you want to both read and write S-Expression files, add the `sx` module as a dependency:
-```
+```zig
 const exe = b.addExecutable(.{
     .name = "my_exe_name",
     .root_source_file = .{ .path = "my_main_file.zig" },
