@@ -20,6 +20,7 @@ pub fn Reader(comptime InnerReader: type) type {
         next_byte: ?u8,
         token: std.ArrayList(u8),
         compact: bool,
+        peek_next: bool,
         state: State,
         ctx: ContextData,
         line_offset: usize,
@@ -38,6 +39,7 @@ pub fn Reader(comptime InnerReader: type) type {
                 .next_byte = null,
                 .token = std.ArrayList(u8).init(allocator),
                 .compact = true,
+                .peek_next = false,
                 .state = .unknown,
                 .ctx = .{},
                 .line_offset = 0,
@@ -189,6 +191,18 @@ pub fn Reader(comptime InnerReader: type) type {
             return self.compact;
         }
 
+        pub fn peekNext(self: *Self) void {
+            self.peek_next = true;
+        }
+
+        pub fn any(self: *Self) void {
+            if (self.peek_next) {
+                self.peek_next = false;
+            } else {
+                self.state = .unknown;
+            }
+        }
+
         pub fn open(self: *Self) !bool {
             if (self.state == .unknown) {
                 try self.read();
@@ -197,10 +211,14 @@ pub fn Reader(comptime InnerReader: type) type {
             if (self.state == .open) {
                 if (self.token.items.len > 0) {
                     self.token_start_ctx = self.val_start_ctx;
-                    self.state = .val;
+                    if (self.peek_next) {
+                        self.peek_next = false;
+                    } else {
+                        self.state = .val;
+                    }
                     self.compact = true;
                 } else {
-                    self.state = .unknown;
+                    self.any();
                 }
                 return true;
             } else {
@@ -220,7 +238,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (self.state == .close) {
-                self.state = .unknown;
+                self.any();
                 return true;
             } else {
                 return false;
@@ -253,7 +271,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (self.state == .open and std.mem.eql(u8, self.token.items, expected)) {
-                self.state = .unknown;
+                self.any();
                 return true;
             } else {
                 return false;
@@ -266,7 +284,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (self.state == .open and std.mem.eql(u8, self.token.items, expected)) {
-                self.state = .unknown;
+                self.any();
             } else {
                 return error.SExpressionSyntaxError;
             }
@@ -278,7 +296,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (self.state == .open) {
-                self.state = .unknown;
+                self.any();
                 return self.token.items;
             } else {
                 return null;
@@ -291,7 +309,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (self.state == .open) {
-                self.state = .unknown;
+                self.any();
                 return self.token.items;
             } else {
                 return error.SExpressionSyntaxError;
@@ -304,20 +322,19 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (self.state == .val and std.mem.eql(u8, self.token.items, expected)) {
-                self.state = .unknown;
+                self.any();
                 return true;
             } else {
                 return false;
             }
         }
-
         pub fn requireString(self: *Self, expected: []const u8) !void {
             if (self.state == .unknown) {
                 try self.read();
             }
 
             if (self.state == .val and std.mem.eql(u8, self.token.items, expected)) {
-                self.state = .unknown;
+                self.any();
             } else {
                 return error.SExpressionSyntaxError;
             }
@@ -329,20 +346,19 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (self.state == .val) {
-                self.state = .unknown;
+                self.any();
                 return self.token.items;
             } else {
                 return null;
             }
         }
-
         pub fn requireAnyString(self: *Self) ![]const u8 {
             if (self.state == .unknown) {
                 try self.read();
             }
 
             if (self.state == .val) {
-                self.state = .unknown;
+                self.any();
                 return self.token.items;
             } else {
                 return error.SExpressionSyntaxError;
@@ -362,16 +378,16 @@ pub fn Reader(comptime InnerReader: type) type {
                 var buf: [5]u8 = undefined;
                 var lower = std.ascii.lowerString(&buf, self.token.items);
                 if (std.mem.eql(u8, lower, "true")) {
-                    self.state = .unknown;
+                    self.any();
                     return true;
                 } else if (std.mem.eql(u8, lower, "false")) {
-                    self.state = .unknown;
+                    self.any();
                     return false;
                 }
             }
 
             var value = 0 != (std.fmt.parseUnsigned(u1, self.token.items, 0) catch return null);
-            self.state = .unknown;
+            self.any();
             return value;
         }
         pub fn requireAnyBoolean(self: *Self) !bool {
@@ -388,13 +404,12 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (std.meta.stringToEnum(T, self.token.items)) |e| {
-                self.state = .unknown;
+                self.any();
                 return e;
             }
 
             return null;
         }
-
         pub fn requireAnyEnum(self: *Self, comptime T: type) !T {
             return try self.anyEnum(T) orelse error.SExpressionSyntaxError;
         }
@@ -410,7 +425,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             if (map.get(self.token.items)) |e| {
-                self.state = .unknown;
+                self.any();
                 return e;
             }
 
@@ -431,7 +446,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             var value = std.fmt.parseFloat(T, self.token.items) catch return null;
-            self.state = .unknown;
+            self.any();
             return value;
         }
         pub fn requireAnyFloat(self: *Self, comptime T: type) !T {
@@ -448,7 +463,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             var value = std.fmt.parseInt(T, self.token.items, radix) catch return null;
-            self.state = .unknown;
+            self.any();
             return value;
         }
         pub fn requireAnyInt(self: *Self, comptime T: type, radix: u8) !T {
@@ -465,7 +480,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
 
             var value = std.fmt.parseUnsigned(T, self.token.items, radix) catch return null;
-            self.state = .unknown;
+            self.any();
             return value;
         }
         pub fn requireAnyUnsigned(self: *Self, comptime T: type, radix: u8) !T {
@@ -485,7 +500,7 @@ pub fn Reader(comptime InnerReader: type) type {
                 } else if (self.state == .open) {
                     depth += 1;
                 }
-                self.state = .unknown;
+                self.any();
             }
         }
 
