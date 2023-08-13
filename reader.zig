@@ -387,11 +387,9 @@ pub fn Reader(comptime InnerReader: type) type {
                 return null;
             }
 
-            for (std.enums.values(T)) |e| {
-                if (std.mem.eql(u8, self.token.items, @tagName(e))) {
-                    self.state = .unknown;
-                    return e;
-                }
+            if (std.meta.stringToEnum(T, self.token.items)) |e| {
+                self.state = .unknown;
+                return e;
             }
 
             return null;
@@ -399,6 +397,28 @@ pub fn Reader(comptime InnerReader: type) type {
 
         pub fn requireAnyEnum(self: *Self, comptime T: type) !T {
             return try self.anyEnum(T) orelse error.SExpressionSyntaxError;
+        }
+
+        // Takes a std.ComptimeStringMap to convert strings into the enum
+        pub fn mapEnum(self: *Self, comptime T: type, map: anytype) !?T {
+            if (self.state == .unknown) {
+                try self.read();
+            }
+
+            if (self.state != .val) {
+                return null;
+            }
+
+            if (map.get(self.token.items)) |e| {
+                self.state = .unknown;
+                return e;
+            }
+
+            return null;
+        }
+
+        pub fn requireMapEnum(self: *Self, comptime T: type, map: anytype) !T {
+            return try self.mapEnum(T, map) orelse error.SExpressionSyntaxError;
         }
 
         pub fn anyFloat(self: *Self, comptime T: type) !?T {
