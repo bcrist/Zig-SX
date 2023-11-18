@@ -29,36 +29,36 @@ var stream = std.io.fixedBufferStream(source);
 var reader = sx.reader(std.testing.allocator, stream.reader());
 defer reader.deinit();
 
-try reader.requireExpression("box");
-_ = try reader.requireAnyString();
+try reader.require_expression("box");
+_ = try reader.require_any_string();
 var color: []const u8 = "";
 var width: f32 = 0;
 var depth: f32 = 0;
 var height: f32 = 0;
 
-while (try reader.anyExpression()) |expr| {
+while (try reader.any_expression()) |expr| {
     if (std.mem.eql(u8, expr, "dimensions")) {
-        width = try reader.requireAnyFloat(f32);
-        depth = try reader.requireAnyFloat(f32);
-        height = try reader.requireAnyFloat(f32);
-        try reader.requireClose();
+        width = try reader.require_any_float(f32);
+        depth = try reader.require_any_float(f32);
+        height = try reader.require_any_float(f32);
+        try reader.require_close();
 
     } else if (std.mem.eql(u8, expr, "color")) {
-        color = try std.testing.allocator.dupe(u8, try reader.requireAnyString());
-        try reader.requireClose();
+        color = try std.testing.allocator.dupe(u8, try reader.require_any_string());
+        try reader.require_close();
 
     } else if (std.mem.eql(u8, expr, "contents")) {
-        while (try reader.anyString()) |contents| {
+        while (try reader.any_string()) |contents| {
             std.debug.print("Phil's box contains: {s}\n", .{ contents });
         }
-        try reader.requireClose();
+        try reader.require_close();
 
     } else {
-        try reader.ignoreRemainingExpression();
+        try reader.ignore_remaining_expression();
     }
 }
-try reader.requireClose();
-try reader.requireDone();
+try reader.require_close();
+try reader.require_done();
 ```
 
 ## Writer Example
@@ -71,7 +71,7 @@ defer writer.deinit();
 
 try writer.expression("box");
 try writer.string("my-box");
-writer.setCompact(false);
+writer.set_compact(false);
 
 try writer.expression("dimensions");
 try writer.float(4.3);
@@ -83,7 +83,7 @@ try writer.expression("color");
 try writer.string("red");
 _ = try writer.close();
 
-try writer.expressionExpanded("contents");
+try writer.expression_expanded("contents");
 try writer.int(42, 10);
 try writer.string(
     \\Big Phil's To Do List:
@@ -108,13 +108,10 @@ This library is designed to be used with the Zig package manager.  To use it, ad
     },
 }
 ```
-Replace `xxxxxx` with the full commit hash for the version of the library you want to use.  The first time you run `zig build` after adding this, it will tell you a SHA256 hash to put after `.url = ...`.  This helps zig ensure that the file wasn't corrupted during download, and that the URL hasn't been hijacked.
+Replace `xxxxxx` with the full commit hash for the version of the library you want to use.  The first time you run `zig build` after adding this, it will tell you a hash to put after `.url = ...`.  This helps zig ensure that the file wasn't corrupted during download, and that the URL hasn't been hijacked.
 Then in your `build.zig` file you can get a reference to the package:
 ```zig
 const zig_sx = b.dependency("Zig-SX", .{});
-```
-If you want to both read and write S-Expression files, add the `sx` module as a dependency:
-```zig
 const exe = b.addExecutable(.{
     .name = "my_exe_name",
     .root_source_file = .{ .path = "my_main_file.zig" },
@@ -123,4 +120,3 @@ const exe = b.addExecutable(.{
 });
 exe.addModule("sx", zig_sx.module("sx"));
 ```
-Alternatively, you can replace `sx` with `sx-reader` or `sx-writer` if you only need one or the other.
