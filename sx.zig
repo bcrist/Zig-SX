@@ -100,6 +100,7 @@ pub fn Writer(comptime Inner_Writer: type) type {
         }
 
         fn requires_quotes(str: []const u8) bool {
+            if (str.len == 0) return true;
             for (str) |c| {
                 if (c <= ' ' or c > '~' or c == '(' or c == ')' or c == '"') {
                     return true;
