@@ -567,7 +567,7 @@ pub fn Reader(comptime Inner_Reader: type) type {
 
             if (self.token.items.len <= 5) {
                 var buf: [5]u8 = undefined;
-                var lower = std.ascii.lowerString(&buf, self.token.items);
+                const lower = std.ascii.lowerString(&buf, self.token.items);
                 if (std.mem.eql(u8, lower, "true")) {
                     try self.any();
                     return true;
@@ -577,7 +577,7 @@ pub fn Reader(comptime Inner_Reader: type) type {
                 }
             }
 
-            var value = 0 != (std.fmt.parseUnsigned(u1, self.token.items, 0) catch return null);
+            const value = 0 != (std.fmt.parseUnsigned(u1, self.token.items, 0) catch return null);
             try self.any();
             return value;
         }
@@ -636,7 +636,7 @@ pub fn Reader(comptime Inner_Reader: type) type {
                 return null;
             }
 
-            var value = std.fmt.parseFloat(T, self.token.items) catch return null;
+            const value = std.fmt.parseFloat(T, self.token.items) catch return null;
             try self.any();
             return value;
         }
@@ -653,7 +653,7 @@ pub fn Reader(comptime Inner_Reader: type) type {
                 return null;
             }
 
-            var value = std.fmt.parseInt(T, self.token.items, radix) catch return null;
+            const value = std.fmt.parseInt(T, self.token.items, radix) catch return null;
             try self.any();
             return value;
         }
@@ -670,7 +670,7 @@ pub fn Reader(comptime Inner_Reader: type) type {
                 return null;
             }
 
-            var value = std.fmt.parseUnsigned(T, self.token.items, radix) catch return null;
+            const value = std.fmt.parseUnsigned(T, self.token.items, radix) catch return null;
             try self.any();
             return value;
         }
@@ -751,7 +751,7 @@ pub const Token_Context = struct {
 
         try source.seekTo(self.prev_line_offset);
         var br = std.io.bufferedReader(source.reader());
-        var file_reader = br.reader();
+        const file_reader = br.reader();
         var line_buf: [max_line_width + 1]u8 = undefined;
         var line_length: usize = undefined;
         while (try read_file_line(file_reader, &line_buf, &line_length)) |line| {
@@ -773,7 +773,7 @@ pub const Token_Context = struct {
     }
 
     fn read_file_line(file_reader: anytype, buffer: []u8, line_length: *usize) !?[]u8 {
-        var line = file_reader.readUntilDelimiterOrEof(buffer, '\n') catch |e| switch (e) {
+        const line = file_reader.readUntilDelimiterOrEof(buffer, '\n') catch |e| switch (e) {
             error.StreamTooLong => {
                 var length = buffer.len;
 
@@ -798,7 +798,7 @@ pub const Token_Context = struct {
     fn print_line(self: Token_Context, print_writer: anytype, line_number: usize, offset: usize, line: []const u8, max_line_width: usize) !void {
         try print_line_number(print_writer, self.start_line_number, line_number);
 
-        var end_of_line = offset + line.len;
+        const end_of_line = offset + line.len;
         var end_of_display = end_of_line;
         if (line.len > max_line_width) {
             try print_writer.writeAll(line[0..max_line_width - 3]);

@@ -1,5 +1,5 @@
 test "sx.Reader" {
-    var str =
+    const str =
         \\(test 1 (1 2)
         \\  2 -3 ( "  
         \\" 4 5 6)
@@ -75,7 +75,7 @@ test "sx.Reader" {
 }
 
 test "sx.Writer" {
-    var expected =
+    const expected =
       \\(box my-box
       \\   (dimensions 4.3 7 14)
       \\   (color red)
