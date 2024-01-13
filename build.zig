@@ -2,8 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const sx = b.addModule("sx", .{
-        .source_file = .{ .path = "sx.zig" },
-        .dependencies = &.{},
+        .root_source_file = .{ .path = "sx.zig" },
     });
 
     const tests = b.addTest(.{
@@ -11,7 +10,7 @@ pub fn build(b: *std.Build) void {
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
     });
-    tests.addModule("sx", sx);
+    tests.root_module.addImport("sx", sx);
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_tests.step);
