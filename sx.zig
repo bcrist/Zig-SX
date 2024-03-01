@@ -2,8 +2,8 @@ pub fn writer(allocator: std.mem.Allocator, inner_writer: anytype) Writer(@TypeO
     return Writer(@TypeOf(inner_writer)).init(allocator, inner_writer);
 }
 
-pub fn reader(allocator: std.mem.Allocator, inner_reader: anytype) Reader(@TypeOf(inner_reader)) {
-    return Reader(@TypeOf(inner_reader)).init(allocator, inner_reader);
+pub fn reader(allocator: std.mem.Allocator, inner_reader: std.io.AnyReader) Reader {
+    return Reader.init(allocator, inner_reader);
 }
 
 pub fn Writer(comptime Inner_Writer: type) type {
@@ -196,519 +196,656 @@ pub fn Writer(comptime Inner_Writer: type) type {
     };
 }
 
-pub fn Reader(comptime Inner_Reader: type) type {
-    return struct {
-        const Self = @This();
+pub const Reader = struct {
+    const State = enum(u8) {
+        unknown = 0,
+        open = 1,
+        close = 2,
+        val = 3,
+        eof = 4
+    };
 
-        const State = enum(u8) {
-            unknown = 0,
-            open = 1,
-            close = 2,
-            val = 3,
-            eof = 4
+    inner: std.io.AnyReader,
+    next_byte: ?u8,
+    token: std.ArrayList(u8),
+    compact: bool,
+    peek: bool,
+    state: State,
+    ctx: Context_Data,
+    line_offset: usize,
+    val_start_ctx: Context_Data,
+    token_start_ctx: Context_Data,
+
+    const Context_Data = struct {
+        offset: usize = 0,
+        prev_line_offset: usize = 0,
+        line_number: usize = 1,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, inner_reader: std.io.AnyReader) Reader {
+        return .{
+            .inner = inner_reader,
+            .next_byte = null,
+            .token = std.ArrayList(u8).init(allocator),
+            .compact = true,
+            .peek = false,
+            .state = .unknown,
+            .ctx = .{},
+            .line_offset = 0,
+            .val_start_ctx = .{},
+            .token_start_ctx = .{},
         };
+    }
 
-        inner: Inner_Reader,
-        next_byte: ?u8,
-        token: std.ArrayList(u8),
-        compact: bool,
-        peek: bool,
-        state: State,
-        ctx: Context_Data,
-        line_offset: usize,
-        val_start_ctx: Context_Data,
-        token_start_ctx: Context_Data,
+    pub fn deinit(self: *Reader) void {
+        self.token.deinit();
+    }
 
-        const Context_Data = struct {
-            offset: usize = 0,
-            prev_line_offset: usize = 0,
-            line_number: usize = 1,
-        };
-
-        pub fn init(allocator: std.mem.Allocator, inner_reader: Inner_Reader) Self {
-            return .{
-                .inner = inner_reader,
-                .next_byte = null,
-                .token = std.ArrayList(u8).init(allocator),
-                .compact = true,
-                .peek = false,
-                .state = .unknown,
-                .ctx = .{},
-                .line_offset = 0,
-                .val_start_ctx = .{},
-                .token_start_ctx = .{},
-            };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.token.deinit();
-        }
-
-        fn consume_byte(self: *Self) !?u8 {
-            var b = self.next_byte;
-            if (b == null) {
-                b = self.inner.readByte() catch |err| {
-                    if (err == error.EndOfStream) {
-                        return null;
-                    } else {
-                        return err;
-                    }
-                };
-            } else {
-                self.next_byte = null;
-            }
-            self.ctx.offset += 1;
-            return b;
-        }
-
-        fn put_back_byte(self: *Self, b: u8) void {
-            self.next_byte = b;
-            self.ctx.offset -= 1;
-        }
-
-        fn skip_whitespace(self: *Self, include_newlines: bool) !void {
-            if (include_newlines) {
-                self.compact = true;
-            }
-            while (try self.consume_byte()) |b| {
-                switch (b) {
-                    '\n' => {
-                        if (include_newlines) {
-                            self.ctx.line_number += 1;
-                            self.ctx.prev_line_offset = self.line_offset;
-                            self.line_offset = self.ctx.offset;
-                            self.compact = false;
-                        } else {
-                            self.put_back_byte(b);
-                            return;
-                        }
-                    },
-                    33...255 => {
-                        self.put_back_byte(b);
-                        return;
-                    },
-                    else => {}
-                }
-            }
-        }
-
-        fn read_unquoted_val(self: *Self) !void {
-            self.token.clearRetainingCapacity();
-
-            while (try self.consume_byte()) |b| {
-                switch (b) {
-                    0...' ', '(', ')', '"' => {
-                        self.put_back_byte(b);
-                        return;
-                    },
-                    else => {
-                        try self.token.append(b);
-                    },
-                }
-            }
-        }
-
-        fn read_quoted_val(self: *Self) !void {
-            self.token.clearRetainingCapacity();
-
-            var in_escape = false;
-            while (try self.consume_byte()) |b| {
-                if (b == '\n') {
-                    self.ctx.line_number += 1;
-                    self.ctx.prev_line_offset = self.line_offset;
-                    self.line_offset = self.ctx.offset;
-                } else if (b == '\r') {
-                    // CR must be escaped as \r if you want it in a literal, otherwise CRLF will be turned into just LF
-                    continue;
-                }
-                if (in_escape) {
-                    try self.token.append(switch (b) {
-                        't' => '\t',
-                        'n' => '\n',
-                        'r' => '\r',
-                        else => b,
-                    });
-                    in_escape = false;
-                } else switch (b) {
-                    '\\' => in_escape = true,
-                    '"' => return,
-                    else => try self.token.append(b),
-                }
-            }
-        }
-
-        fn read(self: *Self) !void {
-            try self.skip_whitespace(true);
-            self.token_start_ctx = self.ctx;
-            if (try self.consume_byte()) |b| {
-                switch (b) {
-                    '(' => {
-                        try self.skip_whitespace(false);
-                        self.val_start_ctx = self.ctx;
-                        if (try self.consume_byte()) |q| {
-                            if (q == '"') {
-                                try self.read_quoted_val();
-                            } else {
-                                self.put_back_byte(q);
-                                try self.read_unquoted_val();
-                            }
-                        } else {
-                            self.token.clearRetainingCapacity();
-                        }
-                        self.state = .open;
-                    },
-                    ')' => {
-                        self.state = .close;
-                    },
-                    '"' => {
-                        try self.read_quoted_val();
-                        self.state = .val;
-                    },
-                    else => {
-                        self.put_back_byte(b);
-                        try self.read_unquoted_val();
-                        self.state = .val;
-                    },
-                }
-            } else {
-                self.state = .eof;
-                return;
-            }
-        }
-
-        pub fn is_compact(self: *Self) !bool {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-            return self.compact;
-        }
-
-        pub fn set_peek(self: *Self, peek: bool) void {
-            self.peek = peek;
-        }
-
-        pub fn any(self: *Self) !void {
-            if (!self.peek) {
-                if (self.state == .unknown) {
-                    try self.read();
-                }
-                self.state = .unknown;
-            }
-        }
-
-        pub fn open(self: *Self) !bool {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .open) {
-                if (self.peek) return true;
-
-                if (self.token.items.len > 0) {
-                    self.token_start_ctx = self.val_start_ctx;
-                    self.state = .val;
-                    self.compact = true;
+    fn consume_byte(self: *Reader) anyerror!?u8 {
+        var b = self.next_byte;
+        if (b == null) {
+            b = self.inner.readByte() catch |err| {
+                if (err == error.EndOfStream) {
+                    return null;
                 } else {
-                    try self.any();
+                    return err;
                 }
-                return true;
+            };
+        } else {
+            self.next_byte = null;
+        }
+        self.ctx.offset += 1;
+        return b;
+    }
+
+    fn put_back_byte(self: *Reader, b: u8) void {
+        self.next_byte = b;
+        self.ctx.offset -= 1;
+    }
+
+    fn skip_whitespace(self: *Reader, include_newlines: bool) anyerror!void {
+        if (include_newlines) {
+            self.compact = true;
+        }
+        while (try self.consume_byte()) |b| {
+            switch (b) {
+                '\n' => {
+                    if (include_newlines) {
+                        self.ctx.line_number += 1;
+                        self.ctx.prev_line_offset = self.line_offset;
+                        self.line_offset = self.ctx.offset;
+                        self.compact = false;
+                    } else {
+                        self.put_back_byte(b);
+                        return;
+                    }
+                },
+                33...255 => {
+                    self.put_back_byte(b);
+                    return;
+                },
+                else => {}
+            }
+        }
+    }
+
+    fn read_unquoted_val(self: *Reader) anyerror!void {
+        self.token.clearRetainingCapacity();
+
+        while (try self.consume_byte()) |b| {
+            switch (b) {
+                0...' ', '(', ')', '"' => {
+                    self.put_back_byte(b);
+                    return;
+                },
+                else => {
+                    try self.token.append(b);
+                },
+            }
+        }
+    }
+
+    fn read_quoted_val(self: *Reader) anyerror!void {
+        self.token.clearRetainingCapacity();
+
+        var in_escape = false;
+        while (try self.consume_byte()) |b| {
+            if (b == '\n') {
+                self.ctx.line_number += 1;
+                self.ctx.prev_line_offset = self.line_offset;
+                self.line_offset = self.ctx.offset;
+            } else if (b == '\r') {
+                // CR must be escaped as \r if you want it in a literal, otherwise CRLF will be turned into just LF
+                continue;
+            }
+            if (in_escape) {
+                try self.token.append(switch (b) {
+                    't' => '\t',
+                    'n' => '\n',
+                    'r' => '\r',
+                    else => b,
+                });
+                in_escape = false;
+            } else switch (b) {
+                '\\' => in_escape = true,
+                '"' => return,
+                else => try self.token.append(b),
+            }
+        }
+    }
+
+    fn read(self: *Reader) anyerror!void {
+        try self.skip_whitespace(true);
+        self.token_start_ctx = self.ctx;
+        if (try self.consume_byte()) |b| {
+            switch (b) {
+                '(' => {
+                    try self.skip_whitespace(false);
+                    self.val_start_ctx = self.ctx;
+                    if (try self.consume_byte()) |q| {
+                        if (q == '"') {
+                            try self.read_quoted_val();
+                        } else {
+                            self.put_back_byte(q);
+                            try self.read_unquoted_val();
+                        }
+                    } else {
+                        self.token.clearRetainingCapacity();
+                    }
+                    self.state = .open;
+                },
+                ')' => {
+                    self.state = .close;
+                },
+                '"' => {
+                    try self.read_quoted_val();
+                    self.state = .val;
+                },
+                else => {
+                    self.put_back_byte(b);
+                    try self.read_unquoted_val();
+                    self.state = .val;
+                },
+            }
+        } else {
+            self.state = .eof;
+            return;
+        }
+    }
+
+    pub fn is_compact(self: *Reader) anyerror!bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+        return self.compact;
+    }
+
+    pub fn set_peek(self: *Reader, peek: bool) void {
+        self.peek = peek;
+    }
+
+    pub fn any(self: *Reader) anyerror!void {
+        if (!self.peek) {
+            if (self.state == .unknown) {
+                try self.read();
+            }
+            self.state = .unknown;
+        }
+    }
+
+    pub fn open(self: *Reader) anyerror!bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .open) {
+            if (self.peek) return true;
+
+            if (self.token.items.len > 0) {
+                self.token_start_ctx = self.val_start_ctx;
+                self.state = .val;
+                self.compact = true;
             } else {
+                try self.any();
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn require_open(self: *Reader) anyerror!void {
+        if (!try self.open()) {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn close(self: *Reader) anyerror!bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .close) {
+            try self.any();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn require_close(self: *Reader) anyerror!void {
+        if (!try self.close()) {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn done(self: *Reader) anyerror!bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        return self.state == .eof;
+    }
+
+    pub fn require_done(self: *Reader) anyerror!void {
+        if (!try self.done()) {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn expression(self: *Reader, expected: []const u8) anyerror!bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .open and std.mem.eql(u8, self.token.items, expected)) {
+            try self.any();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    pub fn require_expression(self: *Reader, expected: []const u8) anyerror!void {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .open and std.mem.eql(u8, self.token.items, expected)) {
+            try self.any();
+        } else {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn any_expression(self: *Reader) anyerror!?[]const u8 {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .open) {
+            try self.any();
+            return self.token.items;
+        } else {
+            return null;
+        }
+    }
+
+    pub fn require_any_expression(self: *Reader) anyerror![]const u8 {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .open) {
+            try self.any();
+            return self.token.items;
+        } else {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn string(self: *Reader, expected: []const u8) anyerror!bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val and std.mem.eql(u8, self.token.items, expected)) {
+            try self.any();
+            return true;
+        } else {
+            return false;
+        }
+    }
+    pub fn require_string(self: *Reader, expected: []const u8) anyerror!void {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val and std.mem.eql(u8, self.token.items, expected)) {
+            try self.any();
+        } else {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn any_string(self: *Reader) anyerror!?[]const u8 {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val) {
+            try self.any();
+            return self.token.items;
+        } else {
+            return null;
+        }
+    }
+    pub fn require_any_string(self: *Reader) anyerror![]const u8 {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val) {
+            try self.any();
+            return self.token.items;
+        } else {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn any_boolean(self: *Reader) anyerror!?bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state != .val) {
+            return null;
+        }
+
+        if (self.token.items.len <= 5) {
+            var buf: [5]u8 = undefined;
+            const lower = std.ascii.lowerString(&buf, self.token.items);
+            if (std.mem.eql(u8, lower, "true")) {
+                try self.any();
+                return true;
+            } else if (std.mem.eql(u8, lower, "false")) {
+                try self.any();
                 return false;
             }
         }
 
-        pub fn require_open(self: *Self) !void {
-            if (!try self.open()) {
-                return error.SExpressionSyntaxError;
+        const value = 0 != (std.fmt.parseUnsigned(u1, self.token.items, 0) catch return null);
+        try self.any();
+        return value;
+    }
+    pub fn require_any_boolean(self: *Reader) anyerror!bool {
+        return try self.any_boolean() orelse error.SExpressionSyntaxError;
+    }
+
+    pub fn any_enum(self: *Reader, comptime T: type) anyerror!?T {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state != .val) {
+            return null;
+        }
+
+        if (std.meta.stringToEnum(T, self.token.items)) |e| {
+            try self.any();
+            return e;
+        }
+
+        return null;
+    }
+    pub fn require_any_enum(self: *Reader, comptime T: type) anyerror!T {
+        return try self.any_enum(T) orelse error.SExpressionSyntaxError;
+    }
+
+    // Takes a std.ComptimeStringMap to convert strings into the enum
+    pub fn map_enum(self: *Reader, comptime T: type, map: anytype) anyerror!?T {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state != .val) {
+            return null;
+        }
+
+        if (map.get(self.token.items)) |e| {
+            try self.any();
+            return e;
+        }
+
+        return null;
+    }
+
+    pub fn require_map_enum(self: *Reader, comptime T: type, map: anytype) anyerror!T {
+        return try self.map_enum(T, map) orelse error.SExpressionSyntaxError;
+    }
+
+    pub fn any_float(self: *Reader, comptime T: type) anyerror!?T {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state != .val) {
+            return null;
+        }
+
+        const value = std.fmt.parseFloat(T, self.token.items) catch return null;
+        try self.any();
+        return value;
+    }
+    pub fn require_any_float(self: *Reader, comptime T: type) anyerror!T {
+        return try self.any_float(T) orelse error.SExpressionSyntaxError;
+    }
+
+    pub fn any_int(self: *Reader, comptime T: type, radix: u8) anyerror!?T {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state != .val) {
+            return null;
+        }
+
+        const value = std.fmt.parseInt(T, self.token.items, radix) catch return null;
+        try self.any();
+        return value;
+    }
+    pub fn require_any_int(self: *Reader, comptime T: type, radix: u8) anyerror!T {
+        return try self.any_int(T, radix) orelse error.SExpressionSyntaxError;
+    }
+
+    pub fn any_unsigned(self: *Reader, comptime T: type, radix: u8) anyerror!?T {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state != .val) {
+            return null;
+        }
+
+        const value = std.fmt.parseUnsigned(T, self.token.items, radix) catch return null;
+        try self.any();
+        return value;
+    }
+    pub fn require_any_unsigned(self: *Reader, comptime T: type, radix: u8) anyerror!T {
+        return try self.any_unsigned(T, radix) orelse error.SExpressionSyntaxError;
+    }
+
+    pub fn object(self: *Reader, arena: std.mem.Allocator, comptime Context: type, defaults: anytype, comptime maybe_field_name: ?[]const u8) anyerror!?@TypeOf(defaults) {
+        var obj = defaults;
+        const T = @TypeOf(obj);
+        const type_name = comptime if (@hasDecl(Context, "type_name")) Context.type_name(T) else @typeName(T);
+        var parsed = false;
+
+        if (maybe_field_name) |field_name| {
+            if (@hasDecl(Context, "parse_field_" ++ field_name)) {
+                const fun = @field(Context, "parse_field_" ++ field_name);
+                if (try fun(self, arena, obj)) |parsed_obj| {
+                    obj = parsed_obj;
+                } else return null;
             }
         }
 
-        pub fn close(self: *Self) !bool {
+        if (!parsed and @hasDecl(Context, "parse_" ++ type_name)) {
+            const fun = @field(Context, "parse_" ++ type_name);
+            if (try fun(self, arena, obj)) |parsed_obj| {
+                obj = parsed_obj;
+                parsed = true;
+            } else return null;
+        }
+
+
+        switch (@typeInfo(T)) {
+            .Bool => {
+                if (try self.any_boolean()) |val| {
+                    obj = val;
+                } else return null;
+            },
+            .Int => {
+                if (try self.any_int(T, 0)) |val| {
+                    obj = val;
+                } else return null;
+            },
+            .Float => {
+                if (try self.any_float(T)) |val| {
+                    obj = val;
+                } else return null;
+            },
+            .Enum => {
+                if (try self.any_enum(T)) |val| {
+                    obj = val;
+                } else return null;
+            },
+            .Pointer => |info| {
+                if (info.size == .Slice) {
+                    if (info.child == u8) {
+                        if (try self.any_string()) |val| {
+                            obj = try arena.dupe(u8, val);
+                        } else return null;
+                    } else {
+                        if (!try self.open()) return null;
+                        var temp = std.ArrayList(info.child).init(self.token.allocator);
+                        defer temp.deinit();
+                        while (try self.object(arena, Context, std.mem.zeroes(info.child), null)) |raw| {
+                            try temp.append(raw);
+                        }
+                        try self.require_close();
+                        obj = try arena.dupe(info.child, temp.items);
+                    }
+                } else {
+                    if (try self.object(arena, Context, obj.*, null)) |raw| {
+                        const ptr = try arena.create(info.child);
+                        ptr.* = raw;
+                        obj = ptr;
+                    } else return null;
+                }
+            },
+            .Array => {
+                if (!try self.open()) return null;
+                for (&obj) |*el| {
+                    el.* = try self.require_object(arena, Context, el.*, null);
+                }
+                try self.require_close();
+            },
+            .Optional => |info| {
+                if (try self.string("nil")) {
+                    obj = null;
+                } else if (obj) |default_value| {
+                    if (try self.object(arena, Context, default_value, null)) |raw| {
+                        obj = raw;
+                    } else return null;
+                } else if (try self.object(arena, Context, std.mem.zeroes(info.child), null)) |raw| {
+                    obj = raw;
+                } else return null;
+            },
+            .Union => |info| {
+                var found_field = false;
+                inline for (info.fields) |field| {
+                    if (!found_field and try self.expression(field.name)) {
+                        if (field.type == void) {
+                            obj = @unionInit(T, field.name, {});
+                        } else if (std.mem.eql(u8, @tagName(obj), field.name)) {
+                            obj = @unionInit(T, field.name, try self.require_object(arena, Context, @field(obj, field.name), field.name));
+                        } else {
+                            obj = @unionInit(T, field.name, try self.require_object(arena, Context, std.mem.zeroes(field.type), field.name));
+                        }
+                        try self.require_close();
+                        found_field = true;
+                    }
+                }
+                if (!found_field) return null;
+            },
+            .Struct => |info| {
+                if (!try self.expression(type_name)) return null;
+                while (true) {
+                    var found_field = false;
+                    inline for (info.fields) |field| {
+                        if (!field.is_comptime and try self.expression(field.name)) {
+                            @field(obj, field.name) = try self.require_object(arena, Context, @field(obj, field.name), field.name);
+                            try self.require_close();
+                            found_field = true;
+                        }
+                    }
+
+                    if (!found_field) break;
+                }
+
+                try self.require_close();
+            },
+            else => unreachable,
+        }
+
+        if (maybe_field_name) |field_name| {
+            if (@hasDecl(Context, "validate_field_" ++ field_name)) {
+                const fun = @field(Context, "validate_field_" ++ field_name);
+                try fun(&obj, arena);
+            }
+        }
+        if (@hasDecl(Context, "validate_" ++ type_name)) {
+            const fun = @field(Context, "validate_" ++ type_name);
+            try fun(&obj, arena);
+        }
+
+        return obj;
+    }
+    pub fn require_object(self: *Reader, arena: std.mem.Allocator, comptime Context: type, defaults: anytype, comptime maybe_field_name: ?[]const u8) anyerror!@TypeOf(defaults) {
+        return try self.object(arena, Context, defaults, maybe_field_name) orelse error.SExpressionSyntaxError;
+    }
+
+    // note this consumes the current expression's closing parenthesis
+    pub fn ignore_remaining_expression(self: *Reader) anyerror!void {
+        var depth: usize = 1;
+        while (self.state != .eof and depth > 0) {
             if (self.state == .unknown) {
                 try self.read();
             }
 
             if (self.state == .close) {
-                try self.any();
-                return true;
-            } else {
-                return false;
+                depth -= 1;
+            } else if (self.state == .open) {
+                depth += 1;
             }
-        }
-
-        pub fn require_close(self: *Self) !void {
-            if (!try self.close()) {
-                return error.SExpressionSyntaxError;
-            }
-        }
-
-        pub fn done(self: *Self) !bool {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            return self.state == .eof;
-        }
-
-        pub fn require_done(self: *Self) !void {
-            if (!try self.done()) {
-                return error.SExpressionSyntaxError;
-            }
-        }
-
-        pub fn expression(self: *Self, expected: []const u8) !bool {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .open and std.mem.eql(u8, self.token.items, expected)) {
-                try self.any();
-                return true;
-            } else {
-                return false;
-            }
-        }
-
-        pub fn require_expression(self: *Self, expected: []const u8) !void {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .open and std.mem.eql(u8, self.token.items, expected)) {
-                try self.any();
-            } else {
-                return error.SExpressionSyntaxError;
-            }
-        }
-
-        pub fn any_expression(self: *Self) !?[]const u8 {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .open) {
-                try self.any();
-                return self.token.items;
-            } else {
-                return null;
-            }
-        }
-
-        pub fn require_any_expression(self: *Self) ![]const u8 {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .open) {
-                try self.any();
-                return self.token.items;
-            } else {
-                return error.SExpressionSyntaxError;
-            }
-        }
-
-        pub fn string(self: *Self, expected: []const u8) !bool {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .val and std.mem.eql(u8, self.token.items, expected)) {
-                try self.any();
-                return true;
-            } else {
-                return false;
-            }
-        }
-        pub fn require_string(self: *Self, expected: []const u8) !void {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .val and std.mem.eql(u8, self.token.items, expected)) {
-                try self.any();
-            } else {
-                return error.SExpressionSyntaxError;
-            }
-        }
-
-        pub fn any_string(self: *Self) !?[]const u8 {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .val) {
-                try self.any();
-                return self.token.items;
-            } else {
-                return null;
-            }
-        }
-        pub fn require_any_string(self: *Self) ![]const u8 {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state == .val) {
-                try self.any();
-                return self.token.items;
-            } else {
-                return error.SExpressionSyntaxError;
-            }
-        }
-
-        pub fn any_boolean(self: *Self) !?bool {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state != .val) {
-                return null;
-            }
-
-            if (self.token.items.len <= 5) {
-                var buf: [5]u8 = undefined;
-                const lower = std.ascii.lowerString(&buf, self.token.items);
-                if (std.mem.eql(u8, lower, "true")) {
-                    try self.any();
-                    return true;
-                } else if (std.mem.eql(u8, lower, "false")) {
-                    try self.any();
-                    return false;
-                }
-            }
-
-            const value = 0 != (std.fmt.parseUnsigned(u1, self.token.items, 0) catch return null);
             try self.any();
-            return value;
         }
-        pub fn require_any_boolean(self: *Self) !bool {
-            return try self.any_boolean() orelse error.SExpressionSyntaxError;
+    }
+
+    pub fn token_context(self: *Reader) anyerror!Token_Context {
+        if (self.state == .unknown) {
+            try self.read();
         }
+        return Token_Context {
+            .prev_line_offset = self.token_start_ctx.prev_line_offset,
+            .start_line_number = self.token_start_ctx.line_number,
+            .start_offset = self.token_start_ctx.offset,
+            .end_offset = self.ctx.offset,
+        };
+    }
 
-        pub fn any_enum(self: *Self, comptime T: type) !?T {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state != .val) {
-                return null;
-            }
-
-            if (std.meta.stringToEnum(T, self.token.items)) |e| {
-                try self.any();
-                return e;
-            }
-
-            return null;
-        }
-        pub fn require_any_enum(self: *Self, comptime T: type) !T {
-            return try self.any_enum(T) orelse error.SExpressionSyntaxError;
-        }
-
-        // Takes a std.ComptimeStringMap to convert strings into the enum
-        pub fn map_enum(self: *Self, comptime T: type, map: anytype) !?T {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state != .val) {
-                return null;
-            }
-
-            if (map.get(self.token.items)) |e| {
-                try self.any();
-                return e;
-            }
-
-            return null;
-        }
-
-        pub fn require_map_enum(self: *Self, comptime T: type, map: anytype) !T {
-            return try self.map_enum(T, map) orelse error.SExpressionSyntaxError;
-        }
-
-        pub fn any_float(self: *Self, comptime T: type) !?T {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state != .val) {
-                return null;
-            }
-
-            const value = std.fmt.parseFloat(T, self.token.items) catch return null;
-            try self.any();
-            return value;
-        }
-        pub fn require_any_float(self: *Self, comptime T: type) !T {
-            return try self.any_float(T) orelse error.SExpressionSyntaxError;
-        }
-
-        pub fn any_int(self: *Self, comptime T: type, radix: u8) !?T {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state != .val) {
-                return null;
-            }
-
-            const value = std.fmt.parseInt(T, self.token.items, radix) catch return null;
-            try self.any();
-            return value;
-        }
-        pub fn require_any_int(self: *Self, comptime T: type, radix: u8) !T {
-            return try self.any_int(T, radix) orelse error.SExpressionSyntaxError;
-        }
-
-        pub fn any_unsigned(self: *Self, comptime T: type, radix: u8) !?T {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-
-            if (self.state != .val) {
-                return null;
-            }
-
-            const value = std.fmt.parseUnsigned(T, self.token.items, radix) catch return null;
-            try self.any();
-            return value;
-        }
-        pub fn require_any_unsigned(self: *Self, comptime T: type, radix: u8) !T {
-            return try self.any_unsigned(T, radix) orelse error.SExpressionSyntaxError;
-        }
-
-        // note this consumes the current expression's closing parenthesis
-        pub fn ignore_remaining_expression(self: *Self) !void {
-            var depth: usize = 1;
-            while (self.state != .eof and depth > 0) {
-                if (self.state == .unknown) {
-                    try self.read();
-                }
-
-                if (self.state == .close) {
-                    depth -= 1;
-                } else if (self.state == .open) {
-                    depth += 1;
-                }
-                try self.any();
-            }
-        }
-
-        pub fn token_context(self: *Self) !Token_Context {
-            if (self.state == .unknown) {
-                try self.read();
-            }
-            return Token_Context {
-                .prev_line_offset = self.token_start_ctx.prev_line_offset,
-                .start_line_number = self.token_start_ctx.line_number,
-                .start_offset = self.token_start_ctx.offset,
-                .end_offset = self.ctx.offset,
-            };
-        }
-
-    };
-}
+};
 
 pub const Token_Context = struct {
     prev_line_offset: usize,
@@ -866,6 +1003,5 @@ pub const Token_Context = struct {
         }
     }
 };
-
 
 const std = @import("std");

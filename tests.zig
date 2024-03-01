@@ -5,9 +5,27 @@ test "sx.Reader" {
         \\" 4 5 6)
         \\  () a b c
         \\)
+        \\
+        \\
+        \\ true
+        \\ 0x20
+        \\ 0.35
+        \\ unsigned
+        \\ "hello world"
+        \\ "hello world 2"
+        \\ (1 2 3 4)
+        \\ (1 2 3)
+        \\ nil 1234
+        \\ (x) (y 1)
+        \\(MyStruct
+        \\    (a asdf)
+        \\    (b 1)
+        \\    (c 2)
+        \\)
+        \\
         ;
     var stream = std.io.fixedBufferStream(str);
-    var reader = sx.reader(std.testing.allocator, stream.reader());
+    var reader = sx.reader(std.testing.allocator, stream.reader().any());
     defer reader.deinit();
 
     var buf: [4096]u8 = undefined;
@@ -15,7 +33,7 @@ test "sx.Reader" {
 
     var ctx = try reader.token_context();
     try ctx.print_for_string(str, buf_stream.writer(), 80);
-    try expectEqualSlices(u8,
+    try expectEqualStrings(
         \\   1 |(test 1 (1 2)
         \\     |^^^^^
         \\   2 |  2 -3 ( "  
@@ -28,7 +46,7 @@ test "sx.Reader" {
     try expectEqual(try reader.open(), false);
     try expectEqual(try reader.close(), false);
     try expectEqual(try reader.require_any_unsigned(usize, 10), @as(usize, 1));
-    try expectEqualSlices(u8, try reader.require_any_expression(), "1");
+    try expectEqualStrings(try reader.require_any_expression(), "1");
     try expectEqual(try reader.any_expression(), null);
     try reader.ignore_remaining_expression();
     try expectEqual(try reader.require_any_unsigned(usize, 0), @as(usize, 2));
@@ -37,7 +55,7 @@ test "sx.Reader" {
 
     ctx = try reader.token_context();
     try ctx.print_for_string(str, buf_stream.writer(), 80);
-    try expectEqualSlices(u8,
+    try expectEqualStrings(
         \\   1 |(test 1 (1 2)
         \\   2 |  2 -3 ( "  
         \\     |         ^^^
@@ -52,7 +70,7 @@ test "sx.Reader" {
     try expectEqual(try reader.string("x"), false);
     try reader.require_string("4");
     try expectEqual(try reader.require_any_float(f32), @as(f32, 5));
-    try expectEqualSlices(u8, try reader.require_any_string(), "6");
+    try expectEqualStrings(try reader.require_any_string(), "6");
     try expectEqual(try reader.any_string(), null);
     try expectEqual(try reader.any_float(f32), null);
     try expectEqual(try reader.any_int(u12, 0), null);
@@ -61,16 +79,83 @@ test "sx.Reader" {
     try reader.require_open();
     try reader.require_close();
     try reader.ignore_remaining_expression();
-    try reader.require_done();
 
     ctx = try reader.token_context();
     try ctx.print_for_string(str, buf_stream.writer(), 80);
-    try expectEqualSlices(u8,
-        \\   4 |  () a b c
-        \\   5 |)
+    try expectEqualStrings(
+        \\   7 |
+        \\   8 | true
+        \\     | ^^^^
+        \\   9 | 0x20
         \\
     , buf_stream.getWritten());
     buf_stream.reset();
+
+
+    const Ctx = struct {
+        pub fn type_name(comptime T: type) []const u8 {
+            const raw = @typeName(T);
+            if (std.mem.lastIndexOfScalar(u8, raw, '.')) |index| {
+                return raw[index + 1 ..];
+            }
+            return raw;
+        }
+    };
+
+    try expectEqual(true, try reader.require_object(std.testing.allocator, Ctx, false, null));
+    try expectEqual(0x20, try reader.require_object(std.testing.allocator, Ctx, @as(u8, 0), null));
+    try expectEqual(0.35, try reader.require_object(std.testing.allocator, Ctx, @as(f64, 0), null));
+    try expectEqual(std.builtin.Signedness.unsigned, try reader.require_object(std.testing.allocator, Ctx, std.builtin.Signedness.signed, null));
+
+    var xyz: []const u8 = "";
+    xyz = try reader.require_object(std.testing.allocator, Ctx, xyz, null);
+    defer std.testing.allocator.free(xyz);
+    try expectEqualStrings("hello world", xyz);
+
+    var ptr: *const []const u8 = &"";
+    ptr = try reader.require_object(std.testing.allocator, Ctx, ptr, null);
+    defer std.testing.allocator.destroy(ptr);
+    defer std.testing.allocator.free(ptr.*);
+    try expectEqualStrings("hello world 2", ptr.*);
+
+    var slice: []const u32 = &.{};
+    slice = try reader.require_object(std.testing.allocator, Ctx, slice, null);
+    defer std.testing.allocator.free(slice);
+    try expectEqualSlices(u32, &.{ 1, 2, 3, 4 }, slice);
+
+    var arr: [3]u4 = .{ 9, 6, 5 };
+    arr = try reader.require_object(std.testing.allocator, Ctx, arr, null);
+    try expectEqualSlices(u4, &.{ 1, 2, 3 }, &arr);
+
+    var opt: ?u32 = null;
+    opt = try reader.require_object(std.testing.allocator, Ctx, opt, null);
+    try expectEqual(null, opt);
+    opt = try reader.require_object(std.testing.allocator, Ctx, opt, null);
+    try expectEqual(1234, opt);
+
+    const U = union (enum) {
+        x,
+        y: u32
+    };
+    var u: U = undefined;
+    u = try reader.require_object(std.testing.allocator, Ctx, u, null);
+    try expectEqual(.x, u);
+    u = try reader.require_object(std.testing.allocator, Ctx, u, null);
+    try expectEqual(@as(U, .{ .y = 1 }), u);
+
+    const MyStruct = struct {
+        a: []const u8 = "",
+        b: u8 = 0,
+        c: i64 = 0,
+    };
+    const s = try reader.require_object(std.testing.allocator, Ctx, MyStruct{}, null);
+    defer std.testing.allocator.free(s.a);
+    try expectEqualStrings("asdf", s.a);
+    try expectEqual(1, s.b);
+    try expectEqual(2, s.c);
+
+    try reader.require_done();
+
 
 }
 
@@ -119,10 +204,11 @@ test "sx.Writer" {
 
     try writer.done();
 
-    try expectEqualSlices(u8, expected, buf_stream.getWritten());
+    try expectEqualStrings(expected, buf_stream.getWritten());
 }
 
 const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
+const expectEqualStrings = std.testing.expectEqualStrings;
 const sx = @import("sx");
 const std = @import("std");
