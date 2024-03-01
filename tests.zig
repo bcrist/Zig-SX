@@ -91,7 +91,6 @@ test "sx.Reader" {
     , buf_stream.getWritten());
     buf_stream.reset();
 
-
     const Ctx = struct {
         pub fn type_name(comptime T: type) []const u8 {
             const raw = @typeName(T);
@@ -102,35 +101,35 @@ test "sx.Reader" {
         }
     };
 
-    try expectEqual(true, try reader.require_object(std.testing.allocator, Ctx, false, null));
-    try expectEqual(0x20, try reader.require_object(std.testing.allocator, Ctx, @as(u8, 0), null));
-    try expectEqual(0.35, try reader.require_object(std.testing.allocator, Ctx, @as(f64, 0), null));
-    try expectEqual(std.builtin.Signedness.unsigned, try reader.require_object(std.testing.allocator, Ctx, std.builtin.Signedness.signed, null));
+    try expectEqual(true, try reader.require_object(std.testing.allocator, Ctx, false));
+    try expectEqual(0x20, try reader.require_object(std.testing.allocator, Ctx, @as(u8, 0)));
+    try expectEqual(0.35, try reader.require_object(std.testing.allocator, Ctx, @as(f64, 0)));
+    try expectEqual(std.builtin.Signedness.unsigned, try reader.require_object(std.testing.allocator, Ctx, std.builtin.Signedness.signed));
 
     var xyz: []const u8 = "";
-    xyz = try reader.require_object(std.testing.allocator, Ctx, xyz, null);
+    xyz = try reader.require_object(std.testing.allocator, Ctx, xyz);
     defer std.testing.allocator.free(xyz);
     try expectEqualStrings("hello world", xyz);
 
     var ptr: *const []const u8 = &"";
-    ptr = try reader.require_object(std.testing.allocator, Ctx, ptr, null);
+    ptr = try reader.require_object(std.testing.allocator, Ctx, ptr);
     defer std.testing.allocator.destroy(ptr);
     defer std.testing.allocator.free(ptr.*);
     try expectEqualStrings("hello world 2", ptr.*);
 
     var slice: []const u32 = &.{};
-    slice = try reader.require_object(std.testing.allocator, Ctx, slice, null);
+    slice = try reader.require_object(std.testing.allocator, Ctx, slice);
     defer std.testing.allocator.free(slice);
     try expectEqualSlices(u32, &.{ 1, 2, 3, 4 }, slice);
 
     var arr: [3]u4 = .{ 9, 6, 5 };
-    arr = try reader.require_object(std.testing.allocator, Ctx, arr, null);
+    arr = try reader.require_object(std.testing.allocator, Ctx, arr);
     try expectEqualSlices(u4, &.{ 1, 2, 3 }, &arr);
 
     var opt: ?u32 = null;
-    opt = try reader.require_object(std.testing.allocator, Ctx, opt, null);
+    opt = try reader.require_object(std.testing.allocator, Ctx, opt);
     try expectEqual(null, opt);
-    opt = try reader.require_object(std.testing.allocator, Ctx, opt, null);
+    opt = try reader.require_object(std.testing.allocator, Ctx, opt);
     try expectEqual(1234, opt);
 
     const U = union (enum) {
@@ -138,9 +137,9 @@ test "sx.Reader" {
         y: u32
     };
     var u: U = undefined;
-    u = try reader.require_object(std.testing.allocator, Ctx, u, null);
+    u = try reader.require_object(std.testing.allocator, Ctx, u);
     try expectEqual(.x, u);
-    u = try reader.require_object(std.testing.allocator, Ctx, u, null);
+    u = try reader.require_object(std.testing.allocator, Ctx, u);
     try expectEqual(@as(U, .{ .y = 1 }), u);
 
     const MyStruct = struct {
@@ -148,15 +147,13 @@ test "sx.Reader" {
         b: u8 = 0,
         c: i64 = 0,
     };
-    const s = try reader.require_object(std.testing.allocator, Ctx, MyStruct{}, null);
+    const s = try reader.require_object(std.testing.allocator, Ctx, MyStruct{});
     defer std.testing.allocator.free(s.a);
     try expectEqualStrings("asdf", s.a);
     try expectEqual(1, s.b);
     try expectEqual(2, s.c);
 
     try reader.require_done();
-
-
 }
 
 test "sx.Writer" {
@@ -168,6 +165,23 @@ test "sx.Writer" {
       \\      42
       \\      "Big Phil's To Do List:\n - paint it black\n - clean up around the house\n"
       \\      "x y \""
+      \\      false
+      \\      32
+      \\      0.35
+      \\      unsigned
+      \\      "hello world"
+      \\      "hello world 2"
+      \\      (1 2 3 4)
+      \\      (9 6 5)
+      \\      nil
+      \\      1234
+      \\      (x)
+      \\      (y 1)
+      \\      (tests.test.sx.Writer.MyStruct
+      \\         (a asdf)
+      \\         (b 123)
+      \\         (c 12355)
+      \\      )
       \\   )
       \\)
     ;
@@ -201,6 +215,49 @@ test "sx.Writer" {
         \\
     );
     try writer.print_value("x y \"", .{});
+
+    const Ctx = struct {};
+
+    try writer.object(Ctx, false);
+    try writer.object(Ctx, @as(u8, 0x20));
+    try writer.object(Ctx, @as(f64, 0.35));
+    try writer.object(Ctx, std.builtin.Signedness.unsigned);
+
+    const xyz: []const u8 = "hello world";
+    try writer.object(Ctx, xyz);
+
+    const ptr: *const []const u8 = &"hello world 2";
+    try writer.object(Ctx, ptr);
+
+    const slice: []const u32 = &.{ 1, 2, 3, 4 };
+    try writer.object(Ctx, slice);
+
+    try writer.object(Ctx, [_]u4 { 9, 6, 5 });
+
+    var opt: ?u32 = null;
+    try writer.object(Ctx, opt);
+    opt = 1234;
+    try writer.object(Ctx, opt);
+
+    const U = union (enum) {
+        x,
+        y: u32
+    };
+    var u: U = .x;
+    try writer.object(Ctx, u);
+    u = .{ .y = 1 };
+    try writer.object(Ctx, u);
+
+    const MyStruct = struct {
+        a: []const u8 = "",
+        b: u8 = 0,
+        c: i64 = 0,
+    };
+    try writer.object(Ctx, MyStruct{
+        .a = "asdf",
+        .b = 123,
+        .c = 12355,
+    });
 
     try writer.done();
 
