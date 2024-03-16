@@ -140,61 +140,35 @@ pub fn Writer(comptime Inner_Writer: type) type {
             return self.string(@tagName(val));
         }
 
-        fn object_internal(self: *Self, comptime Context: type, obj: anytype, comptime maybe_field_name: ?[]const u8) anyerror!void {
+        pub fn object(self: *Self, obj: anytype, comptime Context: type) anyerror!void {
             const T = @TypeOf(obj);
-            const type_name = comptime if (@hasDecl(Context, "type_name")) Context.type_name(T) else @typeName(T);
-            const compact = if (@hasDecl(Context, "write_compact")) Context.write_compact else false;
-
-            if (maybe_field_name) |field_name| {
-                if (@hasDecl(Context, "write_field_" ++ field_name)) {
-                    const fun = @field(Context, "write_field_" ++ field_name);
-                    try fun(self, obj);
-                    return;
-                }
-            }
-
-            if (@hasDecl(Context, "write_" ++ type_name)) {
-                const fun = @field(Context, "write_" ++ type_name);
-                try fun(self, obj);
-                return;
-            }
-
             switch (@typeInfo(T)) {
                 .Bool => try self.boolean(obj),
                 .Int => try self.int(obj, 10),
                 .Float => try self.float(obj),
                 .Enum => try self.tag(obj),
+                .Void => {},
                 .Pointer => |info| {
                     if (info.size == .Slice) {
                         if (info.child == u8) {
                             try self.string(obj);
                         } else {
-                            try self.open();
-                            if (is_big_type(info.child)) {
-                                self.set_compact(compact);
-                            }
                             for (obj) |item| {
-                                try self.object_internal(Context, item, null);
+                                try self.object(item, Context);
                             }
-                            try self.close();
                         }
                     } else {
-                        try self.object_internal(Context, obj.*, null);
+                        try self.object(obj.*, Context);
                     }
                 },
-                .Array => |info| {
-                    try self.open();
-                    if (is_big_type(info.child)) {
-                        self.set_compact(compact);
-                    }
+                .Array => {
                     for (&obj) |el| {
-                        try self.object_internal(Context, el, null);
+                        try self.object(el, Context);
                     }
-                    try self.close();
                 },
                 .Optional => {
                     if (obj) |val| {
-                        try self.object_internal(Context, val, null);
+                        try self.object(val, Context);
                     } else {
                         try self.string("nil");
                     }
@@ -202,31 +176,100 @@ pub fn Writer(comptime Inner_Writer: type) type {
                 .Union => |info| {
                     std.debug.assert(info.tag_type != null);
                     const tag_name = @tagName(obj);
-                    try self.expression(tag_name);
+                    try self.string(tag_name);
                     inline for (info.fields) |field| {
                         if (field.type != void and std.mem.eql(u8, tag_name, field.name)) {
-                            try self.object_internal(Context, @field(obj, field.name), field.name);
+                            try self.object_child(@field(obj, field.name), false, field.name, Context);
                         }
                     }
-                    try self.close();
                 },
                 .Struct => |info| {
-                    try self.expression(type_name);
-                    self.set_compact(compact);
+                    const inline_fields: []const []const u8 = if (@hasDecl(Context, "inline_fields")) @field(Context, "inline_fields") else &.{};
+                    inline for (inline_fields) |field_name| {
+                        try self.object_child(@field(obj, field_name), false, field_name, Context);
+                    }
                     inline for (info.fields) |field| {
                         if (!field.is_comptime) {
-                            try self.expression(field.name);
-                            try self.object_internal(Context, @field(obj, field.name), field.name);
-                            try self.close();
+                            if (!inline for (inline_fields) |inline_field_name| {
+                                if (comptime std.mem.eql(u8, inline_field_name, field.name)) break true;
+                            } else false) {
+                                try self.object_child(@field(obj, field.name), true, field.name, Context);
+                            }
                         }
                     }
-                    try self.close();
                 },
-                else => unreachable,
+                else => @compileError("Unsupported type"),
             }
         }
-        pub fn object(self: *Self, comptime Context: type, obj: anytype) anyerror!void {
-            return self.object_internal(Context, obj, null);
+
+        fn object_child(self: *Self, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!void {
+            const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
+            switch (@typeInfo(@TypeOf(Child_Context))) {
+                .Fn => try Child_Context(child, self, wrap),
+                .Type => switch (@typeInfo(@TypeOf(child))) {
+                    .Pointer => |info| {
+                        if (info.size == .Slice) {
+                            if (info.child == u8) {
+                                if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                                try self.string(child);
+                                if (wrap) try self.close();
+                            } else {
+                                for (child) |item| {
+                                    try self.object_child(item, wrap, field_name, Parent_Context);
+                                }
+                            }
+                        } else {
+                            try self.object_child(child.*, wrap, field_name, Parent_Context);
+                        }
+                    },
+                    .Array => {
+                        for (&child) |item| {
+                            try self.object_child(item, wrap, field_name, Parent_Context);
+                        }
+                    },
+                    .Optional => {
+                        if (child) |item| {
+                            try self.object_child(item, wrap, field_name, Parent_Context);
+                        }
+                    },
+                    else => {
+                        if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                        try self.object(child, Child_Context);
+                        if (wrap) try self.close();
+                    },
+                },
+                .Pointer => |child_context_ptr_info| {
+                    // Child_Context is a comptime constant format string
+                    std.debug.assert(child_context_ptr_info.size == .Slice);
+                    std.debug.assert(child_context_ptr_info.child == u8);
+                    switch (@typeInfo(@TypeOf(child))) {
+                        .Pointer => |info| {
+                            if (info.size == .Slice) {
+                                if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                                try self.print_value(Child_Context, .{ child });
+                                if (wrap) try self.close();
+                            } else {
+                                try self.object_child(child.*, wrap, field_name, Parent_Context);
+                            }
+                        },
+                        else => {
+                            if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                            try self.print_value(Child_Context, .{ child });
+                            if (wrap) try self.close();
+                        },
+                    }
+                },
+                else => @compileError("Expected child context to be a struct, function, or format string declaration"),
+            }
+        }
+
+        fn open_for_object_child(self: *Self, field_name: []const u8, comptime Child: type, comptime Child_Context: type) !void {
+            try self.expression(field_name);
+            if (@hasDecl(Child_Context, "compact")) {
+                self.set_compact(@field(Child_Context, "compact"));
+            } else {
+                self.set_compact(!is_big_type(Child));
+            }
         }
 
         pub fn print_value(self: *Self, comptime format: []const u8, args: anytype) !void {
@@ -764,151 +807,180 @@ pub const Reader = struct {
         return try self.any_unsigned(T, radix) orelse error.SExpressionSyntaxError;
     }
 
-    fn object_internal(self: *Reader, arena: std.mem.Allocator, comptime Context: type, defaults: anytype, comptime maybe_field_name: ?[]const u8) anyerror!?@TypeOf(defaults) {
-        var obj = defaults;
-        const T = @TypeOf(obj);
-        const type_name = comptime if (@hasDecl(Context, "type_name")) Context.type_name(T) else @typeName(T);
-        var parsed = false;
 
-        if (maybe_field_name) |field_name| {
-            if (@hasDecl(Context, "read_field_" ++ field_name)) {
-                const fun = @field(Context, "read_field_" ++ field_name);
-                if (try fun(self, arena, obj)) |parsed_obj| {
-                    obj = parsed_obj;
-                } else return null;
-            }
-        }
-
-        if (!parsed and @hasDecl(Context, "read_" ++ type_name)) {
-            const fun = @field(Context, "read_" ++ type_name);
-            if (try fun(self, arena, obj)) |parsed_obj| {
-                obj = parsed_obj;
-                parsed = true;
-            } else return null;
-        }
-
-        switch (@typeInfo(T)) {
-            .Bool => {
-                if (try self.any_boolean()) |val| {
-                    obj = val;
-                } else return null;
-            },
-            .Int => {
-                if (try self.any_int(T, 0)) |val| {
-                    obj = val;
-                } else return null;
-            },
-            .Float => {
-                if (try self.any_float(T)) |val| {
-                    obj = val;
-                } else return null;
-            },
-            .Enum => {
-                if (try self.any_enum(T)) |val| {
-                    obj = val;
-                } else return null;
-            },
-            .Pointer => |info| {
+    pub fn object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) anyerror!?T {
+        const obj: T = switch (@typeInfo(T)) {
+            .Bool => if (try self.any_boolean()) |val| val else return null,
+            .Int => if (try self.any_int(T, 0)) |val| val else return null,
+            .Float => if (try self.any_float(T)) |val| val else return null,
+            .Enum => if (try self.any_enum(T)) |val| val else return null,
+            .Void => {},
+            .Pointer => |info| blk: {
                 if (info.size == .Slice) {
                     if (info.child == u8) {
                         if (try self.any_string()) |val| {
-                            obj = try arena.dupe(u8, val);
+                            break :blk try arena.dupe(u8, val);
                         } else return null;
                     } else {
-                        if (!try self.open()) return null;
                         var temp = std.ArrayList(info.child).init(self.token.allocator);
                         defer temp.deinit();
-                        while (try self.object_internal(arena, Context, std.mem.zeroes(info.child), null)) |raw| {
-                            try temp.append(raw);
+                        var i: usize = 0;
+                        while (true) : (i += 1) {
+                            if (try self.object(arena, info.child, Context)) |raw| {
+                                try temp.append(raw);
+                            } else break;
                         }
-                        try self.require_close();
-                        obj = try arena.dupe(info.child, temp.items);
+                        break :blk try arena.dupe(info.child, temp.items);
                     }
-                } else {
-                    if (try self.object_internal(arena, Context, obj.*, null)) |raw| {
-                        const ptr = try arena.create(info.child);
-                        ptr.* = raw;
-                        obj = ptr;
-                    } else return null;
-                }
-            },
-            .Array => {
-                if (!try self.open()) return null;
-                for (&obj) |*el| {
-                    el.* = try self.require_object_internal(arena, Context, el.*, null);
-                }
-                try self.require_close();
-            },
-            .Optional => |info| {
-                if (try self.string("nil")) {
-                    obj = null;
-                } else if (obj) |default_value| {
-                    if (try self.object_internal(arena, Context, default_value, null)) |raw| {
-                        obj = raw;
-                    } else return null;
-                } else if (try self.object_internal(arena, Context, std.mem.zeroes(info.child), null)) |raw| {
-                    obj = raw;
+                } else if (try self.object(arena, info.child, Context)) |raw| {
+                    const ptr = try arena.create(info.child);
+                    ptr.* = raw;
+                    break :blk ptr;
                 } else return null;
             },
-            .Union => |info| {
-                var found_field = false;
+            .Array => |info| blk: {
+                var a: T = undefined;
+                if (info.len > 0) {
+                    if (try self.object(arena, info.child, Context)) |raw| {
+                        a[0] = raw;
+                    } else return null;
+                    for (a[1..]) |*el| {
+                        el.* = try self.require_object(arena, info.child, Context);
+                    }
+                }
+                break :blk a;
+            },
+            .Optional => |info| blk: {
+                if (try self.string("nil")) {
+                    break :blk null;
+                } else if (try self.object(arena, info.child, Context)) |raw| {
+                    break :blk raw;
+                } else return null;
+            },
+            .Union => |info| blk: {
+                std.debug.assert(info.tag_type != null);
+                var obj: ?T = null;
                 inline for (info.fields) |field| {
-                    if (!found_field and try self.expression(field.name)) {
-                        if (field.type == void) {
-                            obj = @unionInit(T, field.name, {});
-                        } else if (std.mem.eql(u8, @tagName(obj), field.name)) {
-                            obj = @unionInit(T, field.name, try self.require_object_internal(arena, Context, @field(obj, field.name), field.name));
-                        } else {
-                            obj = @unionInit(T, field.name, try self.require_object_internal(arena, Context, std.mem.zeroes(field.type), field.name));
-                        }
-                        try self.require_close();
-                        found_field = true;
+                    if (obj == null and try self.string(field.name)) {
+                        const value = try self.require_object_child(arena, field.type, false, field.name, Context);
+                        obj = @unionInit(T, field.name, value);
                     }
                 }
-                if (!found_field) return null;
+                if (obj) |o| break :blk o;
+                return null;
             },
-            .Struct => |info| {
-                if (!try self.expression(type_name)) return null;
-                while (true) {
-                    var found_field = false;
-                    inline for (info.fields) |field| {
-                        if (!field.is_comptime and try self.expression(field.name)) {
-                            @field(obj, field.name) = try self.require_object_internal(arena, Context, @field(obj, field.name), field.name);
-                            try self.require_close();
-                            found_field = true;
+            .Struct => |info| blk: {
+                var temp: ArrayList_Struct(T) = .{};
+                defer inline for (@typeInfo(@TypeOf(temp)).Struct.fields) |field| {
+                    @field(temp, field.name).deinit(self.token.allocator);
+                };
+
+                try self.parse_struct_fields(arena, T, &temp, Context);
+
+                var obj: T = .{};
+                inline for (info.fields) |field| {
+                    const arraylist_ptr = &@field(temp, field.name);
+                    if (arraylist_ptr.items.len > 0) {
+                        const Unwrapped = @TypeOf(arraylist_ptr.items[0]);
+                        if (field.type == Unwrapped) {
+                            @field(obj, field.name) = arraylist_ptr.items[0];
+                        } else switch (@typeInfo(field.type)) {
+                            .Array => |arr_info| {
+                                const slice: []arr_info.child = &@field(obj, field.name);
+                                @memcpy(slice.data, arraylist_ptr.items);
+                            },
+                            .Pointer => |ptr_info| {
+                                if (ptr_info.size == .Slice) {
+                                    @field(obj, field.name) = try arena.dupe(Unwrapped, arraylist_ptr.items);
+                                } else {
+                                    const ptr = try arena.create(ptr_info.child);
+                                    ptr.* = arraylist_ptr.items[0];
+                                    @field(obj, field.name) = ptr;
+                                }
+                            },
+                            .Optional => {
+                                @field(obj, field.name) = arraylist_ptr.items[0];
+                            },
+                            else => unreachable,
                         }
                     }
-
-                    if (!found_field) break;
                 }
-
-                try self.require_close();
+                break :blk obj;
             },
-            else => unreachable,
-        }
+            else => @compileError("Unsupported type"),
+        };
 
-        if (maybe_field_name) |field_name| {
-            if (@hasDecl(Context, "validate_field_" ++ field_name)) {
-                const fun = @field(Context, "validate_field_" ++ field_name);
-                try fun(&obj, arena);
-            }
-        }
-        if (@hasDecl(Context, "validate_" ++ type_name)) {
-            const fun = @field(Context, "validate_" ++ type_name);
+        if (@hasDecl(Context, "validate")) {
+            const fun = @field(Context, "validate");
             try fun(&obj, arena);
         }
 
         return obj;
     }
-    fn require_object_internal(self: *Reader, arena: std.mem.Allocator, comptime Context: type, defaults: anytype, comptime maybe_field_name: ?[]const u8) anyerror!@TypeOf(defaults) {
-        return try self.object_internal(arena, Context, defaults, maybe_field_name) orelse error.SExpressionSyntaxError;
+    pub fn require_object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) anyerror!T {
+        return (try self.object(arena, T, Context)) orelse error.SExpressionSyntaxError;
     }
 
-    pub fn object(self: *Reader, arena: std.mem.Allocator, comptime Context: type, defaults: anytype) anyerror!@TypeOf(defaults) {
-        return try self.object_internal(arena, Context, defaults, null);
+    fn parse_struct_fields(self: *Reader, arena: std.mem.Allocator, comptime T: type, temp: *ArrayList_Struct(T), comptime Context: type) anyerror!void {
+        const struct_fields = @typeInfo(T).Struct.fields;
+
+        const inline_fields: []const []const u8 = if (@hasDecl(Context, "inline_fields")) @field(Context, "inline_fields") else &.{};
+        inline for (inline_fields) |field_name| {
+            const Unwrapped = @TypeOf(@field(temp, field_name).items[0]);
+            const field = struct_fields[std.meta.fieldIndex(T, field_name).?];
+            const max_children = max_child_items(field.type);
+
+            var i: usize = 0;
+            while (max_children == null or i < max_children.?) : (i += 1) {
+                const arraylist_ptr = &@field(temp.*, field_name);
+                try arraylist_ptr.ensureUnusedCapacity(self.token.allocator, 1);
+                if (try self.object_child(arena, Unwrapped, false, field_name, Context)) |raw| {
+                    arraylist_ptr.appendAssumeCapacity(raw);
+                } else break;
+            }
+        }
+
+        while (true) {
+            var found_field = false;
+            inline for (struct_fields) |field| {
+                if (!field.is_comptime) {
+                    const arraylist_ptr = &@field(temp.*, field.name);
+                    const check_this_field = if (max_child_items(field.type)) |max| arraylist_ptr.items.len < max else true;
+                    if (check_this_field) {
+                        const Unwrapped = @TypeOf(@field(temp, field.name).items[0]);
+                        try @field(temp.*, field.name).ensureUnusedCapacity(self.token.allocator, 1);
+                        if (try self.object_child(arena, Unwrapped, true, field.name, Context)) |raw| {
+                            @field(temp.*, field.name).appendAssumeCapacity(raw);
+                            found_field = true;
+                        }
+                    }
+                }
+            }
+
+            if (!found_field) break;
+        }
     }
-    pub fn require_object(self: *Reader, arena: std.mem.Allocator, comptime Context: type, defaults: anytype) anyerror!@TypeOf(defaults) {
-        return try self.object_internal(arena, Context, defaults, null) orelse error.SExpressionSyntaxError;
+
+    fn object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!?T {
+        const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
+        switch (@typeInfo(@TypeOf(Child_Context))) {
+            .Fn => return Child_Context(arena, self, wrap),
+            .Type => {
+                if (wrap) {
+                    if (try self.expression(field_name)) {
+                        const value = try self.require_object(arena, T, Child_Context);
+                        try self.require_close();
+                        return value;
+                    } else return null;
+                } else {
+                    return self.object(arena, T, Child_Context);
+                }
+            },
+            else => @compileError("Expected child context to be a struct or function declaration"),
+        }
+    }
+    fn require_object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!T {
+        return (try self.object_child(arena, T, wrap, field_name, Parent_Context)) orelse error.SExpressionSyntaxError;
     }
 
     // note this consumes the current expression's closing parenthesis
@@ -1105,6 +1177,48 @@ fn is_big_type(comptime T: type) bool {
         .Optional => |info| is_big_type(info.child),
         .Struct, .Array => true,
         else => false,
+    };
+}
+
+fn ArrayList_Struct(comptime S: type) type {
+    return comptime blk: {
+        const info = @typeInfo(S).Struct;
+
+        var arraylist_fields: [info.fields.len]std.builtin.Type.StructField = undefined;
+        for (&arraylist_fields, info.fields) |*arraylist_field, field| {
+            const ArrayList_Field = ArrayListify(field.type);
+            arraylist_field.* = .{
+                .name = field.name,
+                .type = ArrayList_Field,
+                .default_value = &@as(ArrayList_Field, .{}),
+                .is_comptime = false,
+                .alignment = @alignOf(ArrayList_Field),
+            };
+        }
+
+        break :blk @Type(.{ .Struct = .{
+            .layout = .Auto,
+            .fields = &arraylist_fields,
+            .decls = &.{},
+            .is_tuple = false,
+        }});
+    };
+}
+
+fn ArrayListify(comptime T: type) type {
+    return std.ArrayListUnmanaged(switch (@typeInfo(T)) {
+        .Pointer => |info| if (info.size == .Slice and info.child == u8) T else info.child,
+        .Optional => |info| info.child,
+        .Array => |info| info.child,
+        else => T,
+    });
+}
+
+fn max_child_items(comptime T: type) ?comptime_int {
+    return switch (@typeInfo(T)) {
+        .Pointer => |info| if (info.size == .Slice and info.child != u8) null else 1,
+        .Array => |info| info.len,
+        else => 1,
     };
 }
 
