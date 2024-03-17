@@ -1,332 +1,328 @@
-pub fn writer(allocator: std.mem.Allocator, inner_writer: anytype) Writer(@TypeOf(inner_writer)) {
-    return Writer(@TypeOf(inner_writer)).init(allocator, inner_writer);
+pub fn writer(allocator: std.mem.Allocator, anywriter: std.io.AnyWriter) Writer {
+    return Writer.init(allocator, anywriter);
 }
 
-pub fn reader(allocator: std.mem.Allocator, inner_reader: std.io.AnyReader) Reader {
-    return Reader.init(allocator, inner_reader);
+pub fn reader(allocator: std.mem.Allocator, anyreader: std.io.AnyReader) Reader {
+    return Reader.init(allocator, anyreader);
 }
 
-pub fn Writer(comptime Inner_Writer: type) type {
-    return struct {
-        inner: Inner_Writer,
-        indent: []const u8,
-        compact_state: std.ArrayList(bool),
-        first_in_group: bool,
+pub const Writer = struct {
+    inner: std.io.AnyWriter,
+    indent: []const u8,
+    compact_state: std.ArrayList(bool),
+    first_in_group: bool,
 
-        const Self = @This();
+    pub fn init(allocator: std.mem.Allocator, inner_writer: std.io.AnyWriter) Writer {
+        return .{
+            .inner = inner_writer,
+            .indent = "   ",
+            .compact_state = std.ArrayList(bool).init(allocator),
+            .first_in_group = true,
+        };
+    }
 
-        pub fn init(allocator: std.mem.Allocator, inner_writer: Inner_Writer) Self {
-            return .{
-                .inner = inner_writer,
-                .indent = "   ",
-                .compact_state = std.ArrayList(bool).init(allocator),
-                .first_in_group = true,
-            };
-        }
+    pub fn deinit(self: *Writer) void {
+        self.compact_state.deinit();
+    }
 
-        pub fn deinit(self: *Self) void {
-            self.compact_state.deinit();
-        }
-
-        fn spacing(self: *Self) !void {
-            const cs = self.compact_state;
-            if (cs.items.len > 0 and cs.items[cs.items.len - 1]) {
-                if (self.first_in_group) {
-                    self.first_in_group = false;
-                } else {
-                    try self.inner.writeByte(' ');
-                }
+    fn spacing(self: *Writer) !void {
+        const cs = self.compact_state;
+        if (cs.items.len > 0 and cs.items[cs.items.len - 1]) {
+            if (self.first_in_group) {
+                self.first_in_group = false;
             } else {
-                if (cs.items.len > 0 or !self.first_in_group) {
-                    try self.inner.writeByte('\n');
-                    for (self.compact_state.items) |_| {
-                        try self.inner.writeAll(self.indent);
-                    }
-                }
-                if (self.first_in_group) {
-                    self.first_in_group = false;
-                }
+                try self.inner.writeByte(' ');
             }
-        }
-
-        pub fn open(self: *Self) !void {
-            try self.spacing();
-            try self.inner.writeByte('(');
-            try self.compact_state.append(true);
-            self.first_in_group = true;
-        }
-
-        pub fn open_expanded(self: *Self) !void {
-            try self.spacing();
-            try self.inner.writeByte('(');
-            try self.compact_state.append(false);
-            self.first_in_group = true;
-        }
-
-        pub fn close(self: *Self) !void {
-            if (self.compact_state.items.len > 0) {
-                if (!self.compact_state.pop() and !self.first_in_group) {
-                    try self.inner.writeByte('\n');
-                    for (self.compact_state.items) |_| {
-                        try self.inner.writeAll(self.indent);
-                    }
-                }
-                try self.inner.writeByte(')');
-            }
-            self.first_in_group = false;
-        }
-
-        pub fn done(self: *Self) !void {
-            while (self.compact_state.items.len > 0) {
-                try self.close();
-            }
-        }
-
-        pub fn set_compact(self: *Self, compact: bool) void {
-            if (self.compact_state.items.len > 0) {
-                self.compact_state.items[self.compact_state.items.len - 1] = compact;
-            }
-        }
-
-        pub fn expression(self: *Self, name: []const u8) !void {
-            try self.open();
-            try self.string(name);
-        }
-
-        pub fn expression_expanded(self: *Self, name: []const u8) !void {
-            try self.open();
-            try self.string(name);
-            self.set_compact(false);
-        }
-
-        fn requires_quotes(str: []const u8) bool {
-            if (str.len == 0) return true;
-            for (str) |c| {
-                if (c <= ' ' or c > '~' or c == '(' or c == ')' or c == '"') {
-                    return true;
+        } else {
+            if (cs.items.len > 0 or !self.first_in_group) {
+                try self.inner.writeByte('\n');
+                for (self.compact_state.items) |_| {
+                    try self.inner.writeAll(self.indent);
                 }
             }
-            return false;
-        }
-
-        pub fn string(self: *Self, str: []const u8) !void {
-            try self.spacing();
-            if (requires_quotes(str)) {
-                try self.inner.writeByte('"');
-                _ = try self.write_escaped(str);
-                try self.inner.writeByte('"');
-            } else {
-                try self.inner.writeAll(str);
+            if (self.first_in_group) {
+                self.first_in_group = false;
             }
         }
+    }
 
-        pub fn float(self: *Self, val: anytype) !void {
-            try self.spacing();
-            try std.fmt.formatFloatDecimal(val, .{}, self.inner);
+    pub fn open(self: *Writer) !void {
+        try self.spacing();
+        try self.inner.writeByte('(');
+        try self.compact_state.append(true);
+        self.first_in_group = true;
+    }
+
+    pub fn open_expanded(self: *Writer) !void {
+        try self.spacing();
+        try self.inner.writeByte('(');
+        try self.compact_state.append(false);
+        self.first_in_group = true;
+    }
+
+    pub fn close(self: *Writer) !void {
+        if (self.compact_state.items.len > 0) {
+            if (!self.compact_state.pop() and !self.first_in_group) {
+                try self.inner.writeByte('\n');
+                for (self.compact_state.items) |_| {
+                    try self.inner.writeAll(self.indent);
+                }
+            }
+            try self.inner.writeByte(')');
         }
+        self.first_in_group = false;
+    }
 
-        pub fn int(self: *Self, val: anytype, radix: u8) !void {
-            try self.spacing();
-            try std.fmt.formatInt(val, radix, std.fmt.Case.upper, .{}, self.inner);
+    pub fn done(self: *Writer) !void {
+        while (self.compact_state.items.len > 0) {
+            try self.close();
         }
+    }
 
-        pub fn boolean(self: *Self, val: bool) !void {
-            try self.spacing();
-            const str = if (val) "true" else "false";
+    pub fn set_compact(self: *Writer, compact: bool) void {
+        if (self.compact_state.items.len > 0) {
+            self.compact_state.items[self.compact_state.items.len - 1] = compact;
+        }
+    }
+
+    pub fn expression(self: *Writer, name: []const u8) !void {
+        try self.open();
+        try self.string(name);
+    }
+
+    pub fn expression_expanded(self: *Writer, name: []const u8) !void {
+        try self.open();
+        try self.string(name);
+        self.set_compact(false);
+    }
+
+    fn requires_quotes(str: []const u8) bool {
+        if (str.len == 0) return true;
+        for (str) |c| {
+            if (c <= ' ' or c > '~' or c == '(' or c == ')' or c == '"') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn string(self: *Writer, str: []const u8) !void {
+        try self.spacing();
+        if (requires_quotes(str)) {
+            try self.inner.writeByte('"');
+            _ = try self.write_escaped(str);
+            try self.inner.writeByte('"');
+        } else {
             try self.inner.writeAll(str);
         }
+    }
 
-        pub fn tag(self: *Self, val: anytype) !void {
-            return self.string(@tagName(val));
+    pub fn float(self: *Writer, val: anytype) !void {
+        try self.spacing();
+        try std.fmt.formatFloatDecimal(val, .{}, self.inner);
+    }
+
+    pub fn int(self: *Writer, val: anytype, radix: u8) !void {
+        try self.spacing();
+        try std.fmt.formatInt(val, radix, std.fmt.Case.upper, .{}, self.inner);
+    }
+
+    pub fn boolean(self: *Writer, val: bool) !void {
+        try self.spacing();
+        const str = if (val) "true" else "false";
+        try self.inner.writeAll(str);
+    }
+
+    pub fn tag(self: *Writer, val: anytype) !void {
+        return self.string(@tagName(val));
+    }
+
+    pub fn object(self: *Writer, obj: anytype, comptime Context: type) anyerror!void {
+        const T = @TypeOf(obj);
+        switch (@typeInfo(T)) {
+            .Bool => try self.boolean(obj),
+            .Int => try self.int(obj, 10),
+            .Float => try self.float(obj),
+            .Enum => try self.tag(obj),
+            .Void => {},
+            .Pointer => |info| {
+                if (info.size == .Slice) {
+                    if (info.child == u8) {
+                        try self.string(obj);
+                    } else {
+                        for (obj) |item| {
+                            try self.object(item, Context);
+                        }
+                    }
+                } else {
+                    try self.object(obj.*, Context);
+                }
+            },
+            .Array => {
+                for (&obj) |el| {
+                    try self.object(el, Context);
+                }
+            },
+            .Optional => {
+                if (obj) |val| {
+                    try self.object(val, Context);
+                } else {
+                    try self.string("nil");
+                }
+            },
+            .Union => |info| {
+                std.debug.assert(info.tag_type != null);
+                const tag_name = @tagName(obj);
+                try self.string(tag_name);
+                inline for (info.fields) |field| {
+                    if (field.type != void and std.mem.eql(u8, tag_name, field.name)) {
+                        try self.object_child(@field(obj, field.name), false, field.name, Context);
+                    }
+                }
+            },
+            .Struct => |info| {
+                const inline_fields: []const []const u8 = if (@hasDecl(Context, "inline_fields")) @field(Context, "inline_fields") else &.{};
+                inline for (inline_fields) |field_name| {
+                    try self.object_child(@field(obj, field_name), false, field_name, Context);
+                }
+                inline for (info.fields) |field| {
+                    if (!field.is_comptime) {
+                        if (!inline for (inline_fields) |inline_field_name| {
+                            if (comptime std.mem.eql(u8, inline_field_name, field.name)) break true;
+                        } else false) {
+                            try self.object_child(@field(obj, field.name), true, field.name, Context);
+                        }
+                    }
+                }
+            },
+            else => @compileError("Unsupported type"),
         }
+    }
 
-        pub fn object(self: *Self, obj: anytype, comptime Context: type) anyerror!void {
-            const T = @TypeOf(obj);
-            switch (@typeInfo(T)) {
-                .Bool => try self.boolean(obj),
-                .Int => try self.int(obj, 10),
-                .Float => try self.float(obj),
-                .Enum => try self.tag(obj),
-                .Void => {},
+    fn object_child(self: *Writer, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!void {
+        const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
+        switch (@typeInfo(@TypeOf(Child_Context))) {
+            .Fn => try Child_Context(child, self, wrap),
+            .Type => switch (@typeInfo(@TypeOf(child))) {
                 .Pointer => |info| {
                     if (info.size == .Slice) {
                         if (info.child == u8) {
-                            try self.string(obj);
+                            if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                            try self.string(child);
+                            if (wrap) try self.close();
                         } else {
-                            for (obj) |item| {
-                                try self.object(item, Context);
+                            for (child) |item| {
+                                try self.object_child(item, wrap, field_name, Parent_Context);
                             }
                         }
                     } else {
-                        try self.object(obj.*, Context);
+                        try self.object_child(child.*, wrap, field_name, Parent_Context);
                     }
                 },
                 .Array => {
-                    for (&obj) |el| {
-                        try self.object(el, Context);
+                    for (&child) |item| {
+                        try self.object_child(item, wrap, field_name, Parent_Context);
                     }
                 },
                 .Optional => {
-                    if (obj) |val| {
-                        try self.object(val, Context);
-                    } else {
-                        try self.string("nil");
+                    if (child) |item| {
+                        try self.object_child(item, wrap, field_name, Parent_Context);
                     }
                 },
-                .Union => |info| {
-                    std.debug.assert(info.tag_type != null);
-                    const tag_name = @tagName(obj);
-                    try self.string(tag_name);
-                    inline for (info.fields) |field| {
-                        if (field.type != void and std.mem.eql(u8, tag_name, field.name)) {
-                            try self.object_child(@field(obj, field.name), false, field.name, Context);
-                        }
-                    }
+                else => {
+                    if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                    try self.object(child, Child_Context);
+                    if (wrap) try self.close();
                 },
-                .Struct => |info| {
-                    const inline_fields: []const []const u8 = if (@hasDecl(Context, "inline_fields")) @field(Context, "inline_fields") else &.{};
-                    inline for (inline_fields) |field_name| {
-                        try self.object_child(@field(obj, field_name), false, field_name, Context);
-                    }
-                    inline for (info.fields) |field| {
-                        if (!field.is_comptime) {
-                            if (!inline for (inline_fields) |inline_field_name| {
-                                if (comptime std.mem.eql(u8, inline_field_name, field.name)) break true;
-                            } else false) {
-                                try self.object_child(@field(obj, field.name), true, field.name, Context);
-                            }
-                        }
-                    }
-                },
-                else => @compileError("Unsupported type"),
-            }
-        }
-
-        fn object_child(self: *Self, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!void {
-            const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
-            switch (@typeInfo(@TypeOf(Child_Context))) {
-                .Fn => try Child_Context(child, self, wrap),
-                .Type => switch (@typeInfo(@TypeOf(child))) {
+            },
+            .Pointer => |child_context_ptr_info| {
+                // Child_Context is a comptime constant format string
+                std.debug.assert(child_context_ptr_info.size == .Slice);
+                std.debug.assert(child_context_ptr_info.child == u8);
+                switch (@typeInfo(@TypeOf(child))) {
                     .Pointer => |info| {
                         if (info.size == .Slice) {
-                            if (info.child == u8) {
-                                if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                                try self.string(child);
-                                if (wrap) try self.close();
-                            } else {
-                                for (child) |item| {
-                                    try self.object_child(item, wrap, field_name, Parent_Context);
-                                }
-                            }
+                            if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                            try self.print_value(Child_Context, .{ child });
+                            if (wrap) try self.close();
                         } else {
                             try self.object_child(child.*, wrap, field_name, Parent_Context);
                         }
                     },
-                    .Array => {
-                        for (&child) |item| {
-                            try self.object_child(item, wrap, field_name, Parent_Context);
-                        }
-                    },
-                    .Optional => {
-                        if (child) |item| {
-                            try self.object_child(item, wrap, field_name, Parent_Context);
-                        }
-                    },
                     else => {
                         if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                        try self.object(child, Child_Context);
+                        try self.print_value(Child_Context, .{ child });
                         if (wrap) try self.close();
                     },
-                },
-                .Pointer => |child_context_ptr_info| {
-                    // Child_Context is a comptime constant format string
-                    std.debug.assert(child_context_ptr_info.size == .Slice);
-                    std.debug.assert(child_context_ptr_info.child == u8);
-                    switch (@typeInfo(@TypeOf(child))) {
-                        .Pointer => |info| {
-                            if (info.size == .Slice) {
-                                if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                                try self.print_value(Child_Context, .{ child });
-                                if (wrap) try self.close();
-                            } else {
-                                try self.object_child(child.*, wrap, field_name, Parent_Context);
-                            }
-                        },
-                        else => {
-                            if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                            try self.print_value(Child_Context, .{ child });
-                            if (wrap) try self.close();
-                        },
-                    }
-                },
-                else => @compileError("Expected child context to be a struct, function, or format string declaration"),
-            }
-        }
-
-        fn open_for_object_child(self: *Self, field_name: []const u8, comptime Child: type, comptime Child_Context: type) !void {
-            try self.expression(field_name);
-            if (@hasDecl(Child_Context, "compact")) {
-                self.set_compact(@field(Child_Context, "compact"));
-            } else {
-                self.set_compact(!is_big_type(Child));
-            }
-        }
-
-        pub fn print_value(self: *Self, comptime format: []const u8, args: anytype) !void {
-            var buf: [1024]u8 = undefined;
-            try self.string(std.fmt.bufPrint(&buf, format, args) catch |e| switch (e) {
-                error.NoSpaceLeft => {
-                    try self.inner.writeByte('"');
-                    const EscapeWriter = std.io.Writer(*Self, Inner_Writer.Error, write_escaped);
-                    var esc = EscapeWriter { .context = self };
-                    try esc.print(format, args);
-                    try self.inner.writeByte('"');
-                    return;
-                },
-                else => return e,
-            });
-        }
-
-        fn write_escaped(self: *Self, bytes: []const u8) Inner_Writer.Error!usize {
-            var i: usize = 0;
-            while (i < bytes.len) : (i += 1) {
-                var c = bytes[i];
-                if (c == '"' or c == '\\') {
-                    try self.inner.writeByte('\\');
-                    try self.inner.writeByte(c);
-                } else if (c < ' ') {
-                    if (c == '\n') {
-                        try self.inner.writeAll("\\n");
-                    } else if (c == '\r') {
-                        try self.inner.writeAll("\\r");
-                    } else if (c == '\t') {
-                        try self.inner.writeAll("\\t");
-                    } else {
-                        try self.inner.writeByte(c);
-                    }
-                } else {
-                    var j = i + 1;
-                    while (j < bytes.len) : (j += 1) {
-                        c = bytes[j];
-                        switch (c) {
-                            '"', '\\', '\n', '\r', '\t' => break,
-                            else => {},
-                        }
-                    }
-                    try self.inner.writeAll(bytes[i..j]);
-                    i = j - 1;
                 }
+            },
+            else => @compileError("Expected child context to be a struct, function, or format string declaration"),
+        }
+    }
+
+    fn open_for_object_child(self: *Writer, field_name: []const u8, comptime Child: type, comptime Child_Context: type) !void {
+        try self.expression(field_name);
+        if (@hasDecl(Child_Context, "compact")) {
+            self.set_compact(@field(Child_Context, "compact"));
+        } else {
+            self.set_compact(!is_big_type(Child));
+        }
+    }
+
+    pub fn print_value(self: *Writer, comptime format: []const u8, args: anytype) !void {
+        var buf: [1024]u8 = undefined;
+        try self.string(std.fmt.bufPrint(&buf, format, args) catch |e| switch (e) {
+            error.NoSpaceLeft => {
+                try self.inner.writeByte('"');
+                const EscapeWriter = std.io.Writer(*Writer, anyerror, write_escaped);
+                var esc = EscapeWriter { .context = self };
+                try esc.print(format, args);
+                try self.inner.writeByte('"');
+                return;
+            },
+            else => return e,
+        });
+    }
+
+    fn write_escaped(self: *Writer, bytes: []const u8) anyerror!usize {
+        var i: usize = 0;
+        while (i < bytes.len) : (i += 1) {
+            var c = bytes[i];
+            if (c == '"' or c == '\\') {
+                try self.inner.writeByte('\\');
+                try self.inner.writeByte(c);
+            } else if (c < ' ') {
+                if (c == '\n') {
+                    try self.inner.writeAll("\\n");
+                } else if (c == '\r') {
+                    try self.inner.writeAll("\\r");
+                } else if (c == '\t') {
+                    try self.inner.writeAll("\\t");
+                } else {
+                    try self.inner.writeByte(c);
+                }
+            } else {
+                var j = i + 1;
+                while (j < bytes.len) : (j += 1) {
+                    c = bytes[j];
+                    switch (c) {
+                        '"', '\\', '\n', '\r', '\t' => break,
+                        else => {},
+                    }
+                }
+                try self.inner.writeAll(bytes[i..j]);
+                i = j - 1;
             }
-            return bytes.len;
         }
+        return bytes.len;
+    }
 
-        pub fn print_raw(self: *Self, comptime format: []const u8, args: anytype) !void {
-            try self.spacing();
-            try self.inner.print(format, args);
-        }
+    pub fn print_raw(self: *Writer, comptime format: []const u8, args: anytype) !void {
+        try self.spacing();
+        try self.inner.print(format, args);
+    }
 
-    };
-}
+};
 
 pub const Reader = struct {
     const State = enum(u8) {

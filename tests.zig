@@ -185,7 +185,7 @@ test "sx.Writer" {
     var buf: [4096]u8 = undefined;
     var buf_stream = std.io.fixedBufferStream(&buf);
 
-    var writer = sx.writer(std.testing.allocator, buf_stream.writer());
+    var writer = sx.writer(std.testing.allocator, buf_stream.writer().any());
     defer writer.deinit();
 
     try writer.expression("box");
@@ -326,7 +326,7 @@ test "write struct with inline fields" {
     var buf: [4096]u8 = undefined;
     var buf_stream = std.io.fixedBufferStream(&buf);
 
-    var writer = sx.writer(std.testing.allocator, buf_stream.writer());
+    var writer = sx.writer(std.testing.allocator, buf_stream.writer().any());
     defer writer.deinit();
 
     try writer.object(obj, Inline_Fields_Ctx);
