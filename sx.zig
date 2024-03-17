@@ -243,7 +243,7 @@ pub const Writer = struct {
                     .Pointer => |info| {
                         if (info.size == .Slice) {
                             if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                            try self.print_value(Child_Context, .{ child });
+                            try self.print_value("{" ++ Child_Context ++ "}", .{ child });
                             if (wrap) try self.close();
                         } else {
                             try self.object_child(child.*, wrap, field_name, Parent_Context);
@@ -251,7 +251,7 @@ pub const Writer = struct {
                     },
                     else => {
                         if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                        try self.print_value(Child_Context, .{ child });
+                        try self.print_value("{" ++ Child_Context ++ "}", .{ child });
                         if (wrap) try self.close();
                     },
                 }
@@ -970,6 +970,22 @@ pub const Reader = struct {
                     } else return null;
                 } else {
                     return self.object(arena, T, Child_Context);
+                }
+            },
+            .Pointer => |child_context_ptr_info| {
+                // Child_Context is a comptime constant format string
+                std.debug.assert(child_context_ptr_info.size == .Slice);
+                std.debug.assert(child_context_ptr_info.child == u8);
+                if (wrap) {
+                    if (try self.expression(field_name)) {
+                        const value = try T.from_string(Child_Context, try self.require_any_string());
+                        try self.require_close();
+                        return value;
+                    } else return null;
+                } else {
+                    if (try self.any_string()) |raw| {
+                        return T.from_string(Child_Context, raw);
+                    } else return null;
                 }
             },
             else => @compileError("Expected child context to be a struct or function declaration"),
