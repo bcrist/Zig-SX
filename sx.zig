@@ -79,6 +79,11 @@ pub const Writer = struct {
         }
     }
 
+    pub fn is_compact(self: *Writer) bool {
+        const items = self.compact_state.items;
+        return items.len > 0 and items[items.len - 1];
+    }
+
     pub fn set_compact(self: *Writer, compact: bool) void {
         if (self.compact_state.items.len > 0) {
             self.compact_state.items[self.compact_state.items.len - 1] = compact;
@@ -119,7 +124,7 @@ pub const Writer = struct {
 
     pub fn float(self: *Writer, val: anytype) !void {
         try self.spacing();
-        try std.fmt.formatFloatDecimal(val, .{}, self.inner);
+        try self.inner.print("{d}", .{ val });
     }
 
     pub fn int(self: *Writer, val: anytype, radix: u8) !void {
@@ -182,8 +187,13 @@ pub const Writer = struct {
             },
             .Struct => |info| {
                 const inline_fields: []const []const u8 = if (@hasDecl(Context, "inline_fields")) @field(Context, "inline_fields") else &.{};
-                inline for (inline_fields) |field_name| {
-                    try self.object_child(@field(obj, field_name), false, field_name, Context);
+                if (inline_fields.len > 0) {
+                    const was_compact = self.is_compact();
+                    self.set_compact(if (@hasDecl(Context, "compact_inline")) @field(Context, "compact_inline") else true);
+                    inline for (inline_fields) |field_name| {
+                        try self.object_child(@field(obj, field_name), false, field_name, Context);
+                    }
+                    self.set_compact(was_compact);
                 }
                 inline for (info.fields) |field| {
                     if (!field.is_comptime) {
@@ -235,22 +245,25 @@ pub const Writer = struct {
                     if (wrap) try self.close();
                 },
             },
-            .Pointer => |child_context_ptr_info| {
+            .Pointer => {
                 // Child_Context is a comptime constant format string
-                std.debug.assert(child_context_ptr_info.size == .Slice);
-                std.debug.assert(child_context_ptr_info.child == u8);
                 switch (@typeInfo(@TypeOf(child))) {
                     .Pointer => |info| {
                         if (info.size == .Slice) {
-                            if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                            if (wrap) try self.expression(field_name);
                             try self.print_value("{" ++ Child_Context ++ "}", .{ child });
                             if (wrap) try self.close();
                         } else {
                             try self.object_child(child.*, wrap, field_name, Parent_Context);
                         }
                     },
+                    .Optional => {
+                        if (child) |inner| {
+                            try self.object_child(inner, wrap, field_name, Parent_Context);
+                        }
+                    },
                     else => {
-                        if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                        if (wrap) try self.expression(field_name);
                         try self.print_value("{" ++ Child_Context ++ "}", .{ child });
                         if (wrap) try self.close();
                     },
@@ -969,13 +982,11 @@ pub const Reader = struct {
                         return value;
                     } else return null;
                 } else {
-                    return self.object(arena, T, Child_Context);
+                    return try self.object(arena, T, Child_Context);
                 }
             },
-            .Pointer => |child_context_ptr_info| {
+            .Pointer => {
                 // Child_Context is a comptime constant format string
-                std.debug.assert(child_context_ptr_info.size == .Slice);
-                std.debug.assert(child_context_ptr_info.child == u8);
                 if (wrap) {
                     if (try self.expression(field_name)) {
                         const value = try T.from_string(Child_Context, try self.require_any_string());
@@ -984,7 +995,7 @@ pub const Reader = struct {
                     } else return null;
                 } else {
                     if (try self.any_string()) |raw| {
-                        return T.from_string(Child_Context, raw);
+                        return try T.from_string(Child_Context, raw);
                     } else return null;
                 }
             },
@@ -1209,7 +1220,7 @@ fn ArrayList_Struct(comptime S: type) type {
         }
 
         break :blk @Type(.{ .Struct = .{
-            .layout = .Auto,
+            .layout = .auto,
             .fields = &arraylist_fields,
             .decls = &.{},
             .is_tuple = false,
