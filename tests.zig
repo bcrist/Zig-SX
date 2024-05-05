@@ -20,6 +20,7 @@ test "sx.Reader" {
         \\ (a asdf)
         \\ (b 1)
         \\ (c 2)
+        \\ (d multiple-words)
         \\
         ;
     var stream = std.io.fixedBufferStream(str);
@@ -134,16 +135,23 @@ test "sx.Reader" {
     u = try reader.require_object(std.testing.allocator, U, Ctx);
     try expectEqual(@as(U, .{ .y = 1 }), u);
 
+    const MyEnum = enum {
+        abc,
+        multiple_words,
+    };
+
     const MyStruct = struct {
         a: []const u8 = "",
         b: u8 = 0,
         c: i64 = 0,
+        d: MyEnum = .abc,
     };
     const s = try reader.require_object(std.testing.allocator, MyStruct, Ctx);
     defer std.testing.allocator.free(s.a);
     try expectEqualStrings("asdf", s.a);
     try expectEqual(1, s.b);
     try expectEqual(2, s.c);
+    try expectEqual(.multiple_words, s.d);
 
     try reader.require_done();
 }
@@ -178,6 +186,7 @@ test "sx.Writer" {
       \\      (a asdf)
       \\      (b 123)
       \\      (c 12355)
+      \\      (d multiple-words)
       \\   )
       \\)
     ;
@@ -244,15 +253,22 @@ test "sx.Writer" {
     u = .{ .y = 1 };
     try writer.object(u, Ctx);
 
+    const MyEnum = enum {
+        abc,
+        multiple_words,
+    };
+
     const MyStruct = struct {
         a: []const u8 = "",
         b: u8 = 0,
         c: i64 = 0,
+        d: MyEnum = .abc,
     };
     try writer.object(MyStruct{
         .a = "asdf",
         .b = 123,
         .c = 12355,
+        .d = .multiple_words,
     }, Ctx);
 
     try writer.done();

@@ -139,7 +139,8 @@ pub const Writer = struct {
     }
 
     pub fn tag(self: *Writer, val: anytype) !void {
-        return self.string(@tagName(val));
+        var buf: [256]u8 = undefined;
+        return self.string(swap_underscores_and_dashes(@tagName(val), &buf));
     }
 
     pub fn object(self: *Writer, obj: anytype, comptime Context: type) anyerror!void {
@@ -733,7 +734,7 @@ pub const Reader = struct {
             return null;
         }
 
-        if (std.meta.stringToEnum(T, self.token.items)) |e| {
+        if (string_to_enum(T, self.token.items)) |e| {
             try self.any();
             return e;
         }
@@ -1244,6 +1245,60 @@ fn max_child_items(comptime T: type) ?comptime_int {
         .Array => |info| info.len,
         else => 1,
     };
+}
+
+fn swap_underscores_and_dashes(str: []const u8, buf: []u8) []const u8 {
+    if (str.len > buf.len) return str;
+
+    for (str, buf[0..str.len]) |c, *out| {
+        out.* = switch (c) {
+            '_' => '-',
+            '-' => '_',
+            else => c,
+        };
+    }
+    
+    return buf[0..str.len];
+}
+
+fn swap_underscores_and_dashes_comptime(comptime str: []const u8) []const u8 {
+    if (str.len > 256) return str;
+
+    comptime var temp: [str.len]u8 = undefined;
+    _ = comptime swap_underscores_and_dashes(str, &temp);
+
+    const result = temp[0..].*;
+    return &result;
+}
+
+
+/// Same as std.meta.stringToEnum, but swaps '_' and '-' in enum names
+fn string_to_enum(comptime T: type, str: []const u8) ?T {
+    // Using ComptimeStringMap here is more performant, but it will start to take too
+    // long to compile if the enum is large enough, due to the current limits of comptime
+    // performance when doing things like constructing lookup maps at comptime.
+    // TODO The '100' here is arbitrary and should be increased when possible:
+    // - https://github.com/ziglang/zig/issues/4055
+    // - https://github.com/ziglang/zig/issues/3863
+    if (@typeInfo(T).Enum.fields.len <= 100) {
+        const kvs = comptime build_kvs: {
+            const EnumKV = struct { []const u8, T };
+            var kvs_array: [@typeInfo(T).Enum.fields.len]EnumKV = undefined;
+            for (@typeInfo(T).Enum.fields, 0..) |enumField, i| {
+                kvs_array[i] = .{ swap_underscores_and_dashes_comptime(enumField.name), @field(T, enumField.name) };
+            }
+            break :build_kvs kvs_array[0..];
+        };
+        const map = std.ComptimeStringMap(T, kvs);
+        return map.get(str);
+    } else {
+        inline for (@typeInfo(T).Enum.fields) |enumField| {
+            if (std.mem.eql(u8, str, swap_underscores_and_dashes_comptime(enumField.name))) {
+                return @field(T, enumField.name);
+            }
+        }
+        return null;
+    }
 }
 
 const std = @import("std");
