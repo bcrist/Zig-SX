@@ -205,7 +205,8 @@ pub const Writer = struct {
                     }
                 }
             },
-            else => @compileError("Unsupported type"),
+            .ErrorUnion => @compileError("Can't serialize error set; did you forget a 'try'?"),
+            else => @compileError("Unsupported type: " ++ @typeName(T)),
         }
     }
 
