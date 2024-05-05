@@ -11,6 +11,7 @@ pub const Writer = struct {
     indent: []const u8,
     compact_state: std.ArrayList(bool),
     first_in_group: bool,
+    wrote_non_compact_item: bool,
 
     pub fn init(allocator: std.mem.Allocator, inner_writer: std.io.AnyWriter) Writer {
         return .{
@@ -18,6 +19,7 @@ pub const Writer = struct {
             .indent = "   ",
             .compact_state = std.ArrayList(bool).init(allocator),
             .first_in_group = true,
+            .wrote_non_compact_item = false,
         };
     }
 
@@ -33,6 +35,7 @@ pub const Writer = struct {
             } else {
                 try self.inner.writeByte(' ');
             }
+            self.wrote_non_compact_item = false;
         } else {
             if (cs.items.len > 0 or !self.first_in_group) {
                 try self.inner.writeByte('\n');
@@ -43,6 +46,7 @@ pub const Writer = struct {
             if (self.first_in_group) {
                 self.first_in_group = false;
             }
+            self.wrote_non_compact_item = true;
         }
     }
 
@@ -51,6 +55,7 @@ pub const Writer = struct {
         try self.inner.writeByte('(');
         try self.compact_state.append(true);
         self.first_in_group = true;
+        self.wrote_non_compact_item = false;
     }
 
     pub fn open_expanded(self: *Writer) !void {
@@ -58,17 +63,21 @@ pub const Writer = struct {
         try self.inner.writeByte('(');
         try self.compact_state.append(false);
         self.first_in_group = true;
+        self.wrote_non_compact_item = false;
     }
 
     pub fn close(self: *Writer) !void {
         if (self.compact_state.items.len > 0) {
-            if (!self.compact_state.pop() and !self.first_in_group) {
+            if (!self.compact_state.pop() and !self.first_in_group and self.wrote_non_compact_item) {
                 try self.inner.writeByte('\n');
                 for (self.compact_state.items) |_| {
                     try self.inner.writeAll(self.indent);
                 }
             }
             try self.inner.writeByte(')');
+            if (self.compact_state.items.len > 0) {
+                self.wrote_non_compact_item = !self.compact_state.items[self.compact_state.items.len - 1];
+            }
         }
         self.first_in_group = false;
     }

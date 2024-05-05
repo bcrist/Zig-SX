@@ -182,12 +182,7 @@ test "sx.Writer" {
       \\      1234
       \\      x
       \\      y
-      \\      1
-      \\      (a asdf)
-      \\      (b 123)
-      \\      (c 12355)
-      \\      (d multiple-words)
-      \\   )
+      \\      1 (a asdf) (b 123) (c 12355) (d multiple-words))
       \\)
     ;
 
@@ -209,6 +204,7 @@ test "sx.Writer" {
 
     try writer.expression("color");
     try writer.string("red");
+    writer.set_compact(false);
     _ = try writer.close();
 
     try writer.expression_expanded("contents");
@@ -253,11 +249,12 @@ test "sx.Writer" {
     u = .{ .y = 1 };
     try writer.object(u, Ctx);
 
+    writer.set_compact(true);
+
     const MyEnum = enum {
         abc,
         multiple_words,
     };
-
     const MyStruct = struct {
         a: []const u8 = "",
         b: u8 = 0,
@@ -270,6 +267,8 @@ test "sx.Writer" {
         .c = 12355,
         .d = .multiple_words,
     }, Ctx);
+
+    writer.set_compact(false);
 
     try writer.done();
 
