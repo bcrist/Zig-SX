@@ -869,22 +869,21 @@ pub const Reader = struct {
                 } else return null;
             },
             .Array => |info| blk: {
+                var a: T = undefined;
                 if (info.child == u8) {
                     if (try self.any_string()) |val| {
-                        break :blk try arena.dupe(u8, val);
+                        if (val.len != a.len) return error.SExpressionSyntaxError;
+                        a = val[0..a.len].*;
                     } else return null;
-                } else {
-                    var a: T = undefined;
-                    if (info.len > 0) {
-                        if (try self.object(arena, info.child, Context)) |raw| {
-                            a[0] = raw;
-                        } else return null;
-                        for (a[1..]) |*el| {
-                            el.* = try self.require_object(arena, info.child, Context);
-                        }
+                } else if (info.len > 0) {
+                    if (try self.object(arena, info.child, Context)) |raw| {
+                        a[0] = raw;
+                    } else return null;
+                    for (a[1..]) |*el| {
+                        el.* = try self.require_object(arena, info.child, Context);
                     }
-                    break :blk a;
                 }
+                break :blk a;
             },
             .Optional => |info| blk: {
                 if (try self.string("nil")) {
@@ -1225,7 +1224,8 @@ fn is_big_type(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .Pointer => |info| if (info.size == .Slice) info.child != u8 else is_big_type(info.child),
         .Optional => |info| is_big_type(info.child),
-        .Struct, .Array => true,
+        .Array => |info| info.child != u8,
+        .Struct => true,
         else => false,
     };
 }
