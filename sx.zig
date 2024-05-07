@@ -173,9 +173,13 @@ pub const Writer = struct {
                     try self.object(obj.*, Context);
                 }
             },
-            .Array => {
-                for (&obj) |el| {
-                    try self.object(el, Context);
+            .Array => |info| {
+                if (info.child == u8) {
+                    try self.string(&obj);
+                } else {
+                    for (&obj) |el| {
+                        try self.object(el, Context);
+                    }
                 }
             },
             .Optional => {
@@ -240,9 +244,15 @@ pub const Writer = struct {
                         try self.object_child(child.*, wrap, field_name, Parent_Context);
                     }
                 },
-                .Array => {
-                    for (&child) |item| {
-                        try self.object_child(item, wrap, field_name, Parent_Context);
+                .Array => |info| {
+                    if (info.child == u8) {
+                        if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                        try self.string(&child);
+                        if (wrap) try self.close();
+                    } else {
+                        for (&child) |item| {
+                            try self.object_child(item, wrap, field_name, Parent_Context);
+                        }
                     }
                 },
                 .Optional => {
@@ -859,16 +869,22 @@ pub const Reader = struct {
                 } else return null;
             },
             .Array => |info| blk: {
-                var a: T = undefined;
-                if (info.len > 0) {
-                    if (try self.object(arena, info.child, Context)) |raw| {
-                        a[0] = raw;
+                if (info.child == u8) {
+                    if (try self.any_string()) |val| {
+                        break :blk try arena.dupe(u8, val);
                     } else return null;
-                    for (a[1..]) |*el| {
-                        el.* = try self.require_object(arena, info.child, Context);
+                } else {
+                    var a: T = undefined;
+                    if (info.len > 0) {
+                        if (try self.object(arena, info.child, Context)) |raw| {
+                            a[0] = raw;
+                        } else return null;
+                        for (a[1..]) |*el| {
+                            el.* = try self.require_object(arena, info.child, Context);
+                        }
                     }
+                    break :blk a;
                 }
-                break :blk a;
             },
             .Optional => |info| blk: {
                 if (try self.string("nil")) {
