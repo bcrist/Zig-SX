@@ -225,13 +225,18 @@ pub const Writer = struct {
     }
 
     fn object_child(self: *Writer, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!void {
+        
         const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
         switch (@typeInfo(@TypeOf(Child_Context))) {
-            .Fn => try Child_Context(child, self, wrap),
+            .Fn => {
+                log.debug("Writing field {s} using function {s}", .{ field_name, @typeName(@TypeOf(Child_Context)) });
+                try Child_Context(child, self, wrap);
+            },
             .Type => switch (@typeInfo(@TypeOf(child))) {
                 .Pointer => |info| {
                     if (info.size == .Slice) {
                         if (info.child == u8) {
+                            log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
                             if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
                             try self.string(child);
                             if (wrap) try self.close();
@@ -246,6 +251,7 @@ pub const Writer = struct {
                 },
                 .Array => |info| {
                     if (info.child == u8) {
+                        log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
                         if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
                         try self.string(&child);
                         if (wrap) try self.close();
@@ -261,6 +267,7 @@ pub const Writer = struct {
                     }
                 },
                 else => {
+                    log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
                     if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
                     try self.object(child, Child_Context);
                     if (wrap) try self.close();
@@ -764,7 +771,7 @@ pub const Reader = struct {
         return try self.any_enum(T) orelse error.SExpressionSyntaxError;
     }
 
-    // Takes a std.ComptimeStringMap to convert strings into the enum
+    // Takes a std.StaticStringMap to convert strings into the enum
     pub fn map_enum(self: *Reader, comptime T: type, map: anytype) anyerror!?T {
         if (self.state == .unknown) {
             try self.read();
@@ -1296,10 +1303,9 @@ fn swap_underscores_and_dashes_comptime(comptime str: []const u8) []const u8 {
     return &result;
 }
 
-
 /// Same as std.meta.stringToEnum, but swaps '_' and '-' in enum names
 fn string_to_enum(comptime T: type, str: []const u8) ?T {
-    // Using ComptimeStringMap here is more performant, but it will start to take too
+    // Using StaticStringMap here is more performant, but it will start to take too
     // long to compile if the enum is large enough, due to the current limits of comptime
     // performance when doing things like constructing lookup maps at comptime.
     // TODO The '100' here is arbitrary and should be increased when possible:
@@ -1314,7 +1320,12 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
             }
             break :build_kvs kvs_array[0..];
         };
-        const map = std.ComptimeStringMap(T, kvs);
+
+        const map = if (comptime zig_version.minor == 12)
+            std.ComptimeStringMap(T, kvs) // TODO remove zig 0.12 support when 0.14 is released
+        else
+            std.StaticStringMap(T).initComptime(kvs);
+
         return map.get(str);
     } else {
         inline for (@typeInfo(T).Enum.fields) |enumField| {
@@ -1325,5 +1336,9 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
         return null;
     }
 }
+
+const zig_version = @import("builtin").zig_version;
+
+const log = std.log.scoped(.sx);
 
 const std = @import("std");

@@ -2,11 +2,11 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const sx = b.addModule("sx", .{
-        .root_source_file = .{ .path = "sx.zig" },
+        .root_source_file = b.path("sx.zig"),
     });
 
     const tests = b.addTest(.{
-        .root_source_file = .{ .path = "tests.zig"},
+        .root_source_file = b.path("tests.zig"),
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
     });

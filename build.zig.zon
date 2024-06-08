@@ -1,5 +1,5 @@
 .{
-    .name = "Zig-SX",
+    .name = "sx",
     .version = "1.1.3",
     .minimum_zig_version = "0.12.0",
     .dependencies = .{},
