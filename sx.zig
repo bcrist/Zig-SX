@@ -193,11 +193,20 @@ pub const Writer = struct {
                 std.debug.assert(info.tag_type != null);
                 const tag_name = @tagName(obj);
                 try self.string(tag_name);
+
+                const has_compact = @hasDecl(Context, "compact") and !@hasField(T, "compact");
+                const compact: type = if (has_compact) @field(Context, "compact") else struct {};
+
+                const was_compact = self.is_compact();
+
                 inline for (info.fields) |field| {
                     if (field.type != void and std.mem.eql(u8, tag_name, field.name)) {
+                        self.set_compact(if (@hasDecl(compact, field.name)) @field(compact, field.name) else was_compact);
                         try self.object_child(@field(obj, field.name), false, field.name, Context);
                     }
                 }
+
+                self.set_compact(was_compact);
             },
             .Struct => |info| {
                 const has_inline_fields = @hasDecl(Context, "inline_fields") and !@hasField(T, "inline_fields");
@@ -314,8 +323,8 @@ pub const Writer = struct {
 
     fn open_for_object_child(self: *Writer, field_name: []const u8, comptime Child: type, comptime Child_Context: type) !void {
         try self.expression(field_name);
-        if (@hasDecl(Child_Context, "compact")) {
-            self.set_compact(@field(Child_Context, "compact"));
+        if (@hasDecl(Child_Context, "default_compact")) {
+            self.set_compact(@field(Child_Context, "default_compact"));
         } else {
             self.set_compact(!is_big_type(Child));
         }
