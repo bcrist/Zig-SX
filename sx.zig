@@ -1049,12 +1049,16 @@ pub const Reader = struct {
                 // Child_Context is a comptime constant format string
                 if (wrap) {
                     if (try self.expression(field_name)) {
-                        const value = if (@hasDecl(T, "from_string")) try T.from_string(Child_Context, try self.require_any_string()) else try self.require_object(arena, T, struct {});
+                        const value = if (comptime has_from_string(T))
+                            try T.from_string(Child_Context, try self.require_any_string())
+                        else
+                            try self.require_object(arena, T, struct {});
+
                         try self.require_close();
                         return value;
                     } else return null;
                 } else {
-                    if (@hasDecl(T, "from_string")) {
+                    if (comptime has_from_string(T)) {
                         if (try self.any_string()) |raw| {
                             return try T.from_string(Child_Context, raw);
                         } else return null;
@@ -1366,6 +1370,13 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
         }
         return null;
     }
+}
+
+inline fn has_from_string(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .Struct, .Enum, .Union, .Opaque => @hasDecl(T, "from_string"),
+        else => false,
+    };
 }
 
 const zig_version = @import("builtin").zig_version;
