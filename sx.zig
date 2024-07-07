@@ -225,53 +225,55 @@ pub const Writer = struct {
     }
 
     fn object_child(self: *Writer, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!void {
-        
         const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
         switch (@typeInfo(@TypeOf(Child_Context))) {
             .Fn => {
                 log.debug("Writing field {s} using function {s}", .{ field_name, @typeName(@TypeOf(Child_Context)) });
                 try Child_Context(child, self, wrap);
             },
-            .Type => switch (@typeInfo(@TypeOf(child))) {
-                .Pointer => |info| {
-                    if (info.size == .Slice) {
+            .Type => {
+                if (Child_Context == void) return; // ignore field
+                switch (@typeInfo(@TypeOf(child))) {
+                    .Pointer => |info| {
+                        if (info.size == .Slice) {
+                            if (info.child == u8) {
+                                log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
+                                if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                                try self.string(child);
+                                if (wrap) try self.close();
+                            } else {
+                                for (child) |item| {
+                                    try self.object_child(item, wrap, field_name, Parent_Context);
+                                }
+                            }
+                        } else {
+                            try self.object_child(child.*, wrap, field_name, Parent_Context);
+                        }
+                    },
+                    .Array => |info| {
                         if (info.child == u8) {
                             log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
                             if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                            try self.string(child);
+                            try self.string(&child);
                             if (wrap) try self.close();
                         } else {
-                            for (child) |item| {
+                            for (&child) |item| {
                                 try self.object_child(item, wrap, field_name, Parent_Context);
                             }
                         }
-                    } else {
-                        try self.object_child(child.*, wrap, field_name, Parent_Context);
-                    }
-                },
-                .Array => |info| {
-                    if (info.child == u8) {
-                        log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
-                        if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                        try self.string(&child);
-                        if (wrap) try self.close();
-                    } else {
-                        for (&child) |item| {
+                    },
+                    .Optional => {
+                        if (child) |item| {
                             try self.object_child(item, wrap, field_name, Parent_Context);
                         }
-                    }
-                },
-                .Optional => {
-                    if (child) |item| {
-                        try self.object_child(item, wrap, field_name, Parent_Context);
-                    }
-                },
-                else => {
-                    log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
-                    if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
-                    try self.object(child, Child_Context);
-                    if (wrap) try self.close();
-                },
+                    },
+                    else => {
+                        log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
+                        if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
+                        try self.object(child, Child_Context);
+                        if (wrap) try self.close();
+                    },
+                }
             },
             .Pointer => {
                 // Child_Context is a comptime constant format string
@@ -1010,11 +1012,16 @@ pub const Reader = struct {
             .Type => {
                 if (wrap) {
                     if (try self.expression(field_name)) {
+                        if (Child_Context == void) {
+                            try self.ignore_remaining_expression();
+                            return null;
+                        }
                         const value = try self.require_object(arena, T, Child_Context);
                         try self.require_close();
                         return value;
                     } else return null;
                 } else {
+                    if (Child_Context == void) return null;
                     return try self.object(arena, T, Child_Context);
                 }
             },
