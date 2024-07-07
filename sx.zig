@@ -200,24 +200,33 @@ pub const Writer = struct {
                 }
             },
             .Struct => |info| {
-                const inline_fields: []const []const u8 = if (@hasDecl(Context, "inline_fields")) @field(Context, "inline_fields") else &.{};
+                const has_inline_fields = @hasDecl(Context, "inline_fields") and !@hasField(T, "inline_fields");
+                const inline_fields: []const []const u8 = if (has_inline_fields) @field(Context, "inline_fields") else &.{};
+
+                const has_compact = @hasDecl(Context, "compact") and !@hasField(T, "compact");
+                const compact: type = if (has_compact) @field(Context, "compact") else struct {};
+
+                const was_compact = self.is_compact();
+
                 if (inline_fields.len > 0) {
-                    const was_compact = self.is_compact();
-                    self.set_compact(if (@hasDecl(Context, "compact_inline")) @field(Context, "compact_inline") else true);
                     inline for (inline_fields) |field_name| {
+                        self.set_compact(if (@hasDecl(compact, field_name)) @field(compact, field_name) else true);
                         try self.object_child(@field(obj, field_name), false, field_name, Context);
                     }
-                    self.set_compact(was_compact);
                 }
+
                 inline for (info.fields) |field| {
                     if (!field.is_comptime) {
                         if (!inline for (inline_fields) |inline_field_name| {
                             if (comptime std.mem.eql(u8, inline_field_name, field.name)) break true;
                         } else false) {
+                            self.set_compact(if (@hasDecl(compact, field.name)) @field(compact, field.name) else was_compact);
                             try self.object_child(@field(obj, field.name), true, field.name, Context);
                         }
                     }
                 }
+
+                self.set_compact(was_compact);
             },
             .ErrorUnion => @compileError("Can't serialize error set; did you forget a 'try'?"),
             else => @compileError("Unsupported type: " ++ @typeName(T)),
@@ -968,7 +977,9 @@ pub const Reader = struct {
     fn parse_struct_fields(self: *Reader, arena: std.mem.Allocator, comptime T: type, temp: *ArrayList_Struct(T), comptime Context: type) anyerror!void {
         const struct_fields = @typeInfo(T).Struct.fields;
 
-        const inline_fields: []const []const u8 = if (@hasDecl(Context, "inline_fields")) @field(Context, "inline_fields") else &.{};
+        const has_inline_fields = @hasDecl(Context, "inline_fields") and !@hasField(T, "inline_fields");
+        const inline_fields: []const []const u8 = if (has_inline_fields) @field(Context, "inline_fields") else &.{};
+
         inline for (inline_fields) |field_name| {
             const Unwrapped = @TypeOf(@field(temp, field_name).items[0]);
             const field = struct_fields[std.meta.fieldIndex(T, field_name).?];
