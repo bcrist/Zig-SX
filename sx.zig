@@ -1049,14 +1049,18 @@ pub const Reader = struct {
                 // Child_Context is a comptime constant format string
                 if (wrap) {
                     if (try self.expression(field_name)) {
-                        const value = try T.from_string(Child_Context, try self.require_any_string());
+                        const value = if (@hasDecl(T, "from_string")) try T.from_string(Child_Context, try self.require_any_string()) else try self.require_object(arena, T, struct {});
                         try self.require_close();
                         return value;
                     } else return null;
                 } else {
-                    if (try self.any_string()) |raw| {
-                        return try T.from_string(Child_Context, raw);
-                    } else return null;
+                    if (@hasDecl(T, "from_string")) {
+                        if (try self.any_string()) |raw| {
+                            return try T.from_string(Child_Context, raw);
+                        } else return null;
+                    } else {
+                        return try self.object(arena, T, struct {});
+                    }
                 }
             },
             else => @compileError("Expected child context to be a struct or function declaration"),
