@@ -155,12 +155,12 @@ pub const Writer = struct {
     pub fn object(self: *Writer, obj: anytype, comptime Context: type) anyerror!void {
         const T = @TypeOf(obj);
         switch (@typeInfo(T)) {
-            .Bool => try self.boolean(obj),
-            .Int => try self.int(obj, 10),
-            .Float => try self.float(obj),
-            .Enum => try self.tag(obj),
-            .Void => {},
-            .Pointer => |info| {
+            .@"bool" => try self.boolean(obj),
+            .int => try self.int(obj, 10),
+            .float => try self.float(obj),
+            .@"enum" => try self.tag(obj),
+            .void => {},
+            .pointer => |info| {
                 if (info.size == .Slice) {
                     if (info.child == u8) {
                         try self.string(obj);
@@ -173,7 +173,7 @@ pub const Writer = struct {
                     try self.object(obj.*, Context);
                 }
             },
-            .Array => |info| {
+            .array => |info| {
                 if (info.child == u8) {
                     try self.string(&obj);
                 } else {
@@ -182,14 +182,14 @@ pub const Writer = struct {
                     }
                 }
             },
-            .Optional => {
+            .optional => {
                 if (obj) |val| {
                     try self.object(val, Context);
                 } else {
                     try self.string("nil");
                 }
             },
-            .Union => |info| {
+            .@"union" => |info| {
                 std.debug.assert(info.tag_type != null);
                 const tag_name = @tagName(obj);
                 try self.string(tag_name);
@@ -208,7 +208,7 @@ pub const Writer = struct {
 
                 self.set_compact(was_compact);
             },
-            .Struct => |info| {
+            .@"struct" => |info| {
                 const has_inline_fields = @hasDecl(Context, "inline_fields") and !@hasField(T, "inline_fields");
                 const inline_fields: []const []const u8 = if (has_inline_fields) @field(Context, "inline_fields") else &.{};
 
@@ -237,7 +237,7 @@ pub const Writer = struct {
 
                 self.set_compact(was_compact);
             },
-            .ErrorUnion => @compileError("Can't serialize error set; did you forget a 'try'?"),
+            .error_union => @compileError("Can't serialize error set; did you forget a 'try'?"),
             else => @compileError("Unsupported type: " ++ @typeName(T)),
         }
     }
@@ -245,14 +245,14 @@ pub const Writer = struct {
     fn object_child(self: *Writer, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!void {
         const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
         switch (@typeInfo(@TypeOf(Child_Context))) {
-            .Fn => {
+            .@"fn" => {
                 log.debug("Writing field {s} using function {s}", .{ field_name, @typeName(@TypeOf(Child_Context)) });
                 try Child_Context(child, self, wrap);
             },
-            .Type => {
+            .@"type" => {
                 if (Child_Context == void) return; // ignore field
                 switch (@typeInfo(@TypeOf(child))) {
-                    .Pointer => |info| {
+                    .pointer => |info| {
                         if (info.size == .Slice) {
                             if (info.child == u8) {
                                 log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
@@ -268,7 +268,7 @@ pub const Writer = struct {
                             try self.object_child(child.*, wrap, field_name, Parent_Context);
                         }
                     },
-                    .Array => |info| {
+                    .array => |info| {
                         if (info.child == u8) {
                             log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
                             if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
@@ -280,7 +280,7 @@ pub const Writer = struct {
                             }
                         }
                     },
-                    .Optional => {
+                    .optional => {
                         if (child) |item| {
                             try self.object_child(item, wrap, field_name, Parent_Context);
                         }
@@ -293,10 +293,10 @@ pub const Writer = struct {
                     },
                 }
             },
-            .Pointer => {
+            .pointer => {
                 // Child_Context is a comptime constant format string
                 switch (@typeInfo(@TypeOf(child))) {
-                    .Pointer => |info| {
+                    .pointer => |info| {
                         if (info.size == .Slice) {
                             if (wrap) try self.expression(field_name);
                             try self.print_value("{" ++ Child_Context ++ "}", .{ child });
@@ -305,7 +305,7 @@ pub const Writer = struct {
                             try self.object_child(child.*, wrap, field_name, Parent_Context);
                         }
                     },
-                    .Optional => {
+                    .optional => {
                         if (child) |inner| {
                             try self.object_child(inner, wrap, field_name, Parent_Context);
                         }
@@ -867,12 +867,12 @@ pub const Reader = struct {
 
     pub fn object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) anyerror!?T {
         const obj: T = switch (@typeInfo(T)) {
-            .Bool => if (try self.any_boolean()) |val| val else return null,
-            .Int => if (try self.any_int(T, 0)) |val| val else return null,
-            .Float => if (try self.any_float(T)) |val| val else return null,
-            .Enum => if (try self.any_enum(T)) |val| val else return null,
-            .Void => {},
-            .Pointer => |info| blk: {
+            .@"bool" => if (try self.any_boolean()) |val| val else return null,
+            .int => if (try self.any_int(T, 0)) |val| val else return null,
+            .float => if (try self.any_float(T)) |val| val else return null,
+            .@"enum" => if (try self.any_enum(T)) |val| val else return null,
+            .@"void" => {},
+            .pointer => |info| blk: {
                 if (info.size == .Slice) {
                     if (info.child == u8) {
                         if (try self.any_string()) |val| {
@@ -895,7 +895,7 @@ pub const Reader = struct {
                     break :blk ptr;
                 } else return null;
             },
-            .Array => |info| blk: {
+            .array => |info| blk: {
                 var a: T = undefined;
                 if (info.child == u8) {
                     if (try self.any_string()) |val| {
@@ -912,14 +912,14 @@ pub const Reader = struct {
                 }
                 break :blk a;
             },
-            .Optional => |info| blk: {
+            .optional => |info| blk: {
                 if (try self.string("nil")) {
                     break :blk null;
                 } else if (try self.object(arena, info.child, Context)) |raw| {
                     break :blk raw;
                 } else return null;
             },
-            .Union => |info| blk: {
+            .@"union" => |info| blk: {
                 std.debug.assert(info.tag_type != null);
                 var obj: ?T = null;
                 inline for (info.fields) |field| {
@@ -931,9 +931,9 @@ pub const Reader = struct {
                 if (obj) |o| break :blk o;
                 return null;
             },
-            .Struct => |info| blk: {
+            .@"struct" => |info| blk: {
                 var temp: ArrayList_Struct(T) = .{};
-                defer inline for (@typeInfo(@TypeOf(temp)).Struct.fields) |field| {
+                defer inline for (@typeInfo(@TypeOf(temp)).@"struct".fields) |field| {
                     @field(temp, field.name).deinit(self.token.allocator);
                 };
 
@@ -947,11 +947,11 @@ pub const Reader = struct {
                         if (field.type == Unwrapped) {
                             @field(obj, field.name) = arraylist_ptr.items[0];
                         } else switch (@typeInfo(field.type)) {
-                            .Array => |arr_info| {
+                            .array => |arr_info| {
                                 const slice: []arr_info.child = &@field(obj, field.name);
                                 @memcpy(slice.data, arraylist_ptr.items);
                             },
-                            .Pointer => |ptr_info| {
+                            .pointer => |ptr_info| {
                                 if (ptr_info.size == .Slice) {
                                     @field(obj, field.name) = try arena.dupe(Unwrapped, arraylist_ptr.items);
                                 } else {
@@ -960,7 +960,7 @@ pub const Reader = struct {
                                     @field(obj, field.name) = ptr;
                                 }
                             },
-                            .Optional => {
+                            .optional => {
                                 @field(obj, field.name) = arraylist_ptr.items[0];
                             },
                             else => unreachable,
@@ -984,7 +984,7 @@ pub const Reader = struct {
     }
 
     fn parse_struct_fields(self: *Reader, arena: std.mem.Allocator, comptime T: type, temp: *ArrayList_Struct(T), comptime Context: type) anyerror!void {
-        const struct_fields = @typeInfo(T).Struct.fields;
+        const struct_fields = @typeInfo(T).@"struct".fields;
 
         const has_inline_fields = @hasDecl(Context, "inline_fields") and !@hasField(T, "inline_fields");
         const inline_fields: []const []const u8 = if (has_inline_fields) @field(Context, "inline_fields") else &.{};
@@ -1028,8 +1028,8 @@ pub const Reader = struct {
     fn object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!?T {
         const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
         switch (@typeInfo(@TypeOf(Child_Context))) {
-            .Fn => return Child_Context(arena, self, wrap),
-            .Type => {
+            .@"fn" => return Child_Context(arena, self, wrap),
+            .@"type" => {
                 if (wrap) {
                     if (try self.expression(field_name)) {
                         if (Child_Context == void) {
@@ -1045,7 +1045,7 @@ pub const Reader = struct {
                     return try self.object(arena, T, Child_Context);
                 }
             },
-            .Pointer => {
+            .pointer => {
                 // Child_Context is a comptime constant format string
                 if (wrap) {
                     if (try self.expression(field_name)) {
@@ -1117,7 +1117,7 @@ pub const Token_Context = struct {
         if (line_number > 1) {
             line_number -= 1;
         }
-        var iter = std.mem.split(u8, source[offset..], "\n");
+        var iter = std.mem.splitScalar(u8, source[offset..], '\n');
         while (iter.next()) |line| {
             if (std.mem.endsWith(u8, line, "\r")) {
                 try print_line(self, print_writer, line_number, offset, line[0..line.len - 1], max_line_width);
@@ -1264,17 +1264,17 @@ pub const Token_Context = struct {
 
 fn is_big_type(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .Pointer => |info| if (info.size == .Slice) info.child != u8 else is_big_type(info.child),
-        .Optional => |info| is_big_type(info.child),
-        .Array => |info| info.child != u8,
-        .Struct => true,
+        .pointer => |info| if (info.size == .Slice) info.child != u8 else is_big_type(info.child),
+        .optional => |info| is_big_type(info.child),
+        .array => |info| info.child != u8,
+        .@"struct" => true,
         else => false,
     };
 }
 
 fn ArrayList_Struct(comptime S: type) type {
     return comptime blk: {
-        const info = @typeInfo(S).Struct;
+        const info = @typeInfo(S).@"struct";
 
         var arraylist_fields: [info.fields.len]std.builtin.Type.StructField = undefined;
         for (&arraylist_fields, info.fields) |*arraylist_field, field| {
@@ -1288,7 +1288,7 @@ fn ArrayList_Struct(comptime S: type) type {
             };
         }
 
-        break :blk @Type(.{ .Struct = .{
+        break :blk @Type(.{ .@"struct" = .{
             .layout = .auto,
             .fields = &arraylist_fields,
             .decls = &.{},
@@ -1299,17 +1299,17 @@ fn ArrayList_Struct(comptime S: type) type {
 
 fn ArrayListify(comptime T: type) type {
     return std.ArrayListUnmanaged(switch (@typeInfo(T)) {
-        .Pointer => |info| if (info.size == .Slice and info.child == u8) T else info.child,
-        .Optional => |info| info.child,
-        .Array => |info| info.child,
+        .pointer => |info| if (info.size == .Slice and info.child == u8) T else info.child,
+        .optional => |info| info.child,
+        .array => |info| info.child,
         else => T,
     });
 }
 
 fn max_child_items(comptime T: type) ?comptime_int {
     return switch (@typeInfo(T)) {
-        .Pointer => |info| if (info.size == .Slice and info.child != u8) null else 1,
-        .Array => |info| info.len,
+        .pointer => |info| if (info.size == .Slice and info.child != u8) null else 1,
+        .array => |info| info.len,
         else => 1,
     };
 }
@@ -1346,11 +1346,11 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
     // TODO The '100' here is arbitrary and should be increased when possible:
     // - https://github.com/ziglang/zig/issues/4055
     // - https://github.com/ziglang/zig/issues/3863
-    if (@typeInfo(T).Enum.fields.len <= 100) {
+    if (@typeInfo(T).@"enum".fields.len <= 100) {
         const kvs = comptime build_kvs: {
             const EnumKV = struct { []const u8, T };
-            var kvs_array: [@typeInfo(T).Enum.fields.len]EnumKV = undefined;
-            for (@typeInfo(T).Enum.fields, 0..) |enumField, i| {
+            var kvs_array: [@typeInfo(T).@"enum".fields.len]EnumKV = undefined;
+            for (@typeInfo(T).@"enum".fields, 0..) |enumField, i| {
                 kvs_array[i] = .{ swap_underscores_and_dashes_comptime(enumField.name), @field(T, enumField.name) };
             }
             break :build_kvs kvs_array[0..];
@@ -1363,7 +1363,7 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
 
         return map.get(str);
     } else {
-        inline for (@typeInfo(T).Enum.fields) |enumField| {
+        inline for (@typeInfo(T).@"enum".fields) |enumField| {
             if (std.mem.eql(u8, str, swap_underscores_and_dashes_comptime(enumField.name))) {
                 return @field(T, enumField.name);
             }
@@ -1374,7 +1374,7 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
 
 inline fn has_from_string(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .Struct, .Enum, .Union, .Opaque => @hasDecl(T, "from_string"),
+        .@"struct", .@"enum", .@"union", .@"opaque" => @hasDecl(T, "from_string"),
         else => false,
     };
 }
