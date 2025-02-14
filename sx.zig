@@ -68,7 +68,7 @@ pub const Writer = struct {
 
     pub fn close(self: *Writer) !void {
         if (self.compact_state.items.len > 0) {
-            if (!self.compact_state.pop() and !self.first_in_group and self.wrote_non_compact_item) {
+            if (!(self.compact_state.pop().?) and !self.first_in_group and self.wrote_non_compact_item) {
                 try self.inner.writeByte('\n');
                 for (self.compact_state.items) |_| {
                     try self.inner.writeAll(self.indent);
@@ -161,7 +161,7 @@ pub const Writer = struct {
             .@"enum" => try self.tag(obj),
             .void => {},
             .pointer => |info| {
-                if (info.size == .Slice) {
+                if (info.size == .slice) {
                     if (info.child == u8) {
                         try self.string(obj);
                     } else {
@@ -253,7 +253,7 @@ pub const Writer = struct {
                 if (Child_Context == void) return; // ignore field
                 switch (@typeInfo(@TypeOf(child))) {
                     .pointer => |info| {
-                        if (info.size == .Slice) {
+                        if (info.size == .slice) {
                             if (info.child == u8) {
                                 log.debug("Writing field {s} using context {s}", .{ field_name, @typeName(Child_Context) });
                                 if (wrap) try self.open_for_object_child(field_name, @TypeOf(child), Child_Context);
@@ -297,7 +297,7 @@ pub const Writer = struct {
                 // Child_Context is a comptime constant format string
                 switch (@typeInfo(@TypeOf(child))) {
                     .pointer => |info| {
-                        if (info.size == .Slice) {
+                        if (info.size == .slice) {
                             if (wrap) try self.expression(field_name);
                             try self.print_value("{" ++ Child_Context ++ "}", .{ child });
                             if (wrap) try self.close();
@@ -873,7 +873,7 @@ pub const Reader = struct {
             .@"enum" => if (try self.any_enum(T)) |val| val else return null,
             .@"void" => {},
             .pointer => |info| blk: {
-                if (info.size == .Slice) {
+                if (info.size == .slice) {
                     if (info.child == u8) {
                         if (try self.any_string()) |val| {
                             break :blk try arena.dupe(u8, val);
@@ -952,7 +952,7 @@ pub const Reader = struct {
                                 @memcpy(slice.data, arraylist_ptr.items);
                             },
                             .pointer => |ptr_info| {
-                                if (ptr_info.size == .Slice) {
+                                if (ptr_info.size == .slice) {
                                     @field(obj, field.name) = try arena.dupe(Unwrapped, arraylist_ptr.items);
                                 } else {
                                     const ptr = try arena.create(ptr_info.child);
@@ -1264,7 +1264,7 @@ pub const Token_Context = struct {
 
 fn is_big_type(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .pointer => |info| if (info.size == .Slice) info.child != u8 else is_big_type(info.child),
+        .pointer => |info| if (info.size == .slice) info.child != u8 else is_big_type(info.child),
         .optional => |info| is_big_type(info.child),
         .array => |info| info.child != u8,
         .@"struct" => true,
@@ -1282,7 +1282,7 @@ fn ArrayList_Struct(comptime S: type) type {
             arraylist_field.* = .{
                 .name = field.name,
                 .type = ArrayList_Field,
-                .default_value = &@as(ArrayList_Field, .{}),
+                .default_value_ptr = &@as(ArrayList_Field, .{}),
                 .is_comptime = false,
                 .alignment = @alignOf(ArrayList_Field),
             };
@@ -1299,7 +1299,7 @@ fn ArrayList_Struct(comptime S: type) type {
 
 fn ArrayListify(comptime T: type) type {
     return std.ArrayListUnmanaged(switch (@typeInfo(T)) {
-        .pointer => |info| if (info.size == .Slice and info.child == u8) T else info.child,
+        .pointer => |info| if (info.size == .slice and info.child == u8) T else info.child,
         .optional => |info| info.child,
         .array => |info| info.child,
         else => T,
@@ -1308,7 +1308,7 @@ fn ArrayListify(comptime T: type) type {
 
 fn max_child_items(comptime T: type) ?comptime_int {
     return switch (@typeInfo(T)) {
-        .pointer => |info| if (info.size == .Slice and info.child != u8) null else 1,
+        .pointer => |info| if (info.size == .slice and info.child != u8) null else 1,
         .array => |info| info.len,
         else => 1,
     };
