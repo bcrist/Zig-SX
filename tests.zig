@@ -23,8 +23,8 @@ test "sx.Reader" {
         \\ (d multiple-words)
         \\
         ;
-    var stream = std.io.fixedBufferStream(str);
-    var reader = sx.reader(std.testing.allocator, stream.reader().any());
+    var stream = std.io.Reader.fixed(str);
+    var reader = sx.reader(std.testing.allocator, &stream);
     defer reader.deinit();
 
     var buf: [4096]u8 = undefined;
@@ -187,9 +187,9 @@ test "sx.Writer" {
     ;
 
     var buf: [4096]u8 = undefined;
-    var buf_stream = std.io.fixedBufferStream(&buf);
+    var w = std.io.Writer.fixed(&buf);
 
-    var writer = sx.writer(std.testing.allocator, buf_stream.writer().any());
+    var writer = sx.writer(std.testing.allocator, &w);
     defer writer.deinit();
 
     try writer.expression("box");
@@ -272,7 +272,7 @@ test "sx.Writer" {
 
     try writer.done();
 
-    try expectEqualStrings(expected, buf_stream.getWritten());
+    try expectEqualStrings(expected, w.buffered());
 }
 
 
@@ -296,8 +296,8 @@ test "read struct with inline fields" {
         \\(multi 1234)
         \\
         ;
-    var stream = std.io.fixedBufferStream(str);
-    var reader = sx.reader(std.testing.allocator, stream.reader().any());
+    var r = std.io.Reader.fixed(str);
+    var reader = sx.reader(std.testing.allocator, &r);
     defer reader.deinit();
 
     const result = try reader.require_object(std.testing.allocator, Inline_Fields_Struct, Inline_Fields_Ctx);
@@ -339,15 +339,15 @@ test "write struct with inline fields" {
     };
 
     var buf: [4096]u8 = undefined;
-    var buf_stream = std.io.fixedBufferStream(&buf);
+    var w = std.io.Writer.fixed(&buf);
 
-    var writer = sx.writer(std.testing.allocator, buf_stream.writer().any());
+    var writer = sx.writer(std.testing.allocator, &w);
     defer writer.deinit();
 
     try writer.object(obj, Inline_Fields_Ctx);
     try writer.done();
 
-    try expectEqualStrings(expected, buf_stream.getWritten());
+    try expectEqualStrings(expected, w.buffered());
 }
 
 const expectEqual = std.testing.expectEqual;

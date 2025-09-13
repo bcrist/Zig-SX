@@ -1,30 +1,32 @@
-pub fn writer(allocator: std.mem.Allocator, anywriter: std.io.AnyWriter) Writer {
-    return Writer.init(allocator, anywriter);
+pub fn writer(allocator: std.mem.Allocator, w: *std.io.Writer) Writer {
+    return Writer.init(allocator, w);
 }
 
-pub fn reader(allocator: std.mem.Allocator, anyreader: std.io.AnyReader) Reader {
-    return Reader.init(allocator, anyreader);
+pub fn reader(allocator: std.mem.Allocator, r: *std.io.Reader) Reader {
+    return Reader.init(allocator, r);
 }
 
 pub const Writer = struct {
-    inner: std.io.AnyWriter,
+    inner: *std.io.Writer,
     indent: []const u8,
+    gpa: std.mem.Allocator,
     compact_state: std.ArrayList(bool),
     first_in_group: bool,
     wrote_non_compact_item: bool,
 
-    pub fn init(allocator: std.mem.Allocator, inner_writer: std.io.AnyWriter) Writer {
+    pub fn init(gpa: std.mem.Allocator, w: *std.io.Writer) Writer {
         return .{
-            .inner = inner_writer,
+            .inner = w,
             .indent = "   ",
-            .compact_state = std.ArrayList(bool).init(allocator),
+            .gpa = gpa,
+            .compact_state = .empty,
             .first_in_group = true,
             .wrote_non_compact_item = false,
         };
     }
 
     pub fn deinit(self: *Writer) void {
-        self.compact_state.deinit();
+        self.compact_state.deinit(self.gpa);
     }
 
     fn spacing(self: *Writer) !void {
@@ -53,7 +55,7 @@ pub const Writer = struct {
     pub fn open(self: *Writer) !void {
         try self.spacing();
         try self.inner.writeByte('(');
-        try self.compact_state.append(true);
+        try self.compact_state.append(self.gpa, true);
         self.first_in_group = true;
         self.wrote_non_compact_item = false;
     }
@@ -61,7 +63,7 @@ pub const Writer = struct {
     pub fn open_expanded(self: *Writer) !void {
         try self.spacing();
         try self.inner.writeByte('(');
-        try self.compact_state.append(false);
+        try self.compact_state.append(self.gpa, false);
         self.first_in_group = true;
         self.wrote_non_compact_item = false;
     }
@@ -124,7 +126,7 @@ pub const Writer = struct {
         try self.spacing();
         if (requires_quotes(str)) {
             try self.inner.writeByte('"');
-            _ = try self.write_escaped(str);
+            _ = try write_escaped(self.inner, str);
             try self.inner.writeByte('"');
         } else {
             try self.inner.writeAll(str);
@@ -133,12 +135,20 @@ pub const Writer = struct {
 
     pub fn float(self: *Writer, val: anytype) !void {
         try self.spacing();
-        try self.inner.print("{d}", .{ val });
+        switch (@typeInfo(@TypeOf(val))) {
+            .@"comptime_float", .float => {
+                try self.inner.printFloat(val, .{});
+            },
+            .@"comptime_int", .int => {
+                try self.inner.printFloat(@as(f64, @floatFromInt(val)), .{});
+            },
+            else => @compileError("Expected float"),
+        }
     }
 
     pub fn int(self: *Writer, val: anytype, radix: u8) !void {
         try self.spacing();
-        try std.fmt.formatInt(val, radix, std.fmt.Case.upper, .{}, self.inner);
+        try self.inner.printInt(val, radix, .upper, .{});
     }
 
     pub fn boolean(self: *Writer, val: bool) !void {
@@ -152,7 +162,7 @@ pub const Writer = struct {
         return self.string(swap_underscores_and_dashes(@tagName(val), &buf));
     }
 
-    pub fn object(self: *Writer, obj: anytype, comptime Context: type) anyerror!void {
+    pub fn object(self: *Writer, obj: anytype, comptime Context: type) !void {
         const T = @TypeOf(obj);
         switch (@typeInfo(T)) {
             .@"bool" => try self.boolean(obj),
@@ -242,7 +252,7 @@ pub const Writer = struct {
         }
     }
 
-    fn object_child(self: *Writer, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!void {
+    fn object_child(self: *Writer, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) !void {
         const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
         switch (@typeInfo(@TypeOf(Child_Context))) {
             .@"fn" => {
@@ -332,51 +342,54 @@ pub const Writer = struct {
 
     pub fn print_value(self: *Writer, comptime format: []const u8, args: anytype) !void {
         var buf: [1024]u8 = undefined;
-        try self.string(std.fmt.bufPrint(&buf, format, args) catch |e| switch (e) {
-            error.NoSpaceLeft => {
-                try self.inner.writeByte('"');
-                const EscapeWriter = std.io.Writer(*Writer, anyerror, write_escaped);
-                var esc = EscapeWriter { .context = self };
-                try esc.print(format, args);
-                try self.inner.writeByte('"');
-                return;
-            },
-            else => return e,
-        });
+        var w = std.io.Writer.fixed(&buf);
+        w.print(format, args) catch {
+            try self.spacing();
+            try self.inner.writeByte('"');
+            var ew: Escaped_Writer = .init(self.inner, &buf);
+            try ew.writer.print(format, args);
+            try ew.writer.flush();
+            try self.inner.writeByte('"');
+            return;
+        };
+        try self.string(w.buffered());
     }
 
-    fn write_escaped(self: *Writer, bytes: []const u8) anyerror!usize {
-        var i: usize = 0;
-        while (i < bytes.len) : (i += 1) {
-            var c = bytes[i];
-            if (c == '"' or c == '\\') {
-                try self.inner.writeByte('\\');
-                try self.inner.writeByte(c);
-            } else if (c < ' ') {
-                if (c == '\n') {
-                    try self.inner.writeAll("\\n");
-                } else if (c == '\r') {
-                    try self.inner.writeAll("\\r");
-                } else if (c == '\t') {
-                    try self.inner.writeAll("\\t");
-                } else {
-                    try self.inner.writeByte(c);
-                }
-            } else {
-                var j = i + 1;
-                while (j < bytes.len) : (j += 1) {
-                    c = bytes[j];
-                    switch (c) {
-                        '"', '\\', '\n', '\r', '\t' => break,
-                        else => {},
-                    }
-                }
-                try self.inner.writeAll(bytes[i..j]);
-                i = j - 1;
-            }
+    const Escaped_Writer = struct {
+        out: *std.io.Writer,
+        writer: std.io.Writer,
+        done: bool,
+
+        pub fn init(out: *std.io.Writer, buffer: []u8) Escaped_Writer {
+            return .{
+                .out = out,
+                .writer = .{
+                    .buffer = buffer,
+                    .vtable = &.{ .drain = drain },
+                },
+                .done = false,
+            };
         }
-        return bytes.len;
-    }
+
+        fn drain(w: *std.io.Writer, data: []const []const u8, splat: usize) std.io.Writer.Error!usize {
+            const self: *Escaped_Writer = @alignCast(@fieldParentPtr("writer", w));
+            const aux = w.buffered();
+            var n = try write_escaped(self.out, aux);
+            w.end = 0;
+
+            if (data.len > 0) {
+                for (data[0 .. data.len - 1]) |slice| {
+                    n += try write_escaped(self.out, slice);
+                }
+                const pattern = data[data.len - 1];
+                for (0..splat) |_| {
+                    n += try write_escaped(self.out, pattern);
+                }
+            }
+
+            return n;
+        }
+    };
 
     pub fn print_raw(self: *Writer, comptime format: []const u8, args: anytype) !void {
         try self.spacing();
@@ -384,6 +397,39 @@ pub const Writer = struct {
     }
 
 };
+
+fn write_escaped(w: *std.io.Writer, bytes: []const u8) std.io.Writer.Error!usize {
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) {
+        var c = bytes[i];
+        if (c == '"' or c == '\\') {
+            try w.writeByte('\\');
+            try w.writeByte(c);
+        } else if (c < ' ') {
+            if (c == '\n') {
+                try w.writeAll("\\n");
+            } else if (c == '\r') {
+                try w.writeAll("\\r");
+            } else if (c == '\t') {
+                try w.writeAll("\\t");
+            } else {
+                try w.writeByte(c);
+            }
+        } else {
+            var j = i + 1;
+            while (j < bytes.len) : (j += 1) {
+                c = bytes[j];
+                switch (c) {
+                    '"', '\\', '\n', '\r', '\t' => break,
+                    else => {},
+                }
+            }
+            try w.writeAll(bytes[i..j]);
+            i = j - 1;
+        }
+    }
+    return bytes.len;
+}
 
 pub const Reader = struct {
     const State = enum(u8) {
@@ -394,8 +440,9 @@ pub const Reader = struct {
         eof = 4
     };
 
-    inner: std.io.AnyReader,
+    inner: *std.io.Reader,
     next_byte: ?u8,
+    gpa: std.mem.Allocator,
     token: std.ArrayList(u8),
     compact: bool,
     peek: bool,
@@ -411,11 +458,12 @@ pub const Reader = struct {
         line_number: usize = 1,
     };
 
-    pub fn init(allocator: std.mem.Allocator, inner_reader: std.io.AnyReader) Reader {
+    pub fn init(gpa: std.mem.Allocator, r: *std.io.Reader) Reader {
         return .{
-            .inner = inner_reader,
+            .inner = r,
             .next_byte = null,
-            .token = std.ArrayList(u8).init(allocator),
+            .gpa = gpa,
+            .token = .empty,
             .compact = true,
             .peek = false,
             .state = .unknown,
@@ -427,18 +475,15 @@ pub const Reader = struct {
     }
 
     pub fn deinit(self: *Reader) void {
-        self.token.deinit();
+        self.token.deinit(self.gpa);
     }
 
-    fn consume_byte(self: *Reader) anyerror!?u8 {
+    fn consume_byte(self: *Reader) error{ReadFailed}!?u8 {
         var b = self.next_byte;
         if (b == null) {
-            b = self.inner.readByte() catch |err| {
-                if (err == error.EndOfStream) {
-                    return null;
-                } else {
-                    return err;
-                }
+            b = self.inner.takeByte() catch |err| switch (err) {
+                error.EndOfStream => return null,
+                error.ReadFailed => return @errorCast(err),
             };
         } else {
             self.next_byte = null;
@@ -452,7 +497,7 @@ pub const Reader = struct {
         self.ctx.offset -= 1;
     }
 
-    fn skip_whitespace(self: *Reader, include_newlines: bool) anyerror!void {
+    fn skip_whitespace(self: *Reader, include_newlines: bool) !void {
         if (include_newlines) {
             self.compact = true;
         }
@@ -478,7 +523,7 @@ pub const Reader = struct {
         }
     }
 
-    fn read_unquoted_val(self: *Reader) anyerror!void {
+    fn read_unquoted_val(self: *Reader) !void {
         self.token.clearRetainingCapacity();
 
         while (try self.consume_byte()) |b| {
@@ -488,13 +533,13 @@ pub const Reader = struct {
                     return;
                 },
                 else => {
-                    try self.token.append(b);
+                    try self.token.append(self.gpa, b);
                 },
             }
         }
     }
 
-    fn read_quoted_val(self: *Reader) anyerror!void {
+    fn read_quoted_val(self: *Reader) !void {
         self.token.clearRetainingCapacity();
 
         var in_escape = false;
@@ -508,7 +553,7 @@ pub const Reader = struct {
                 continue;
             }
             if (in_escape) {
-                try self.token.append(switch (b) {
+                try self.token.append(self.gpa, switch (b) {
                     't' => '\t',
                     'n' => '\n',
                     'r' => '\r',
@@ -518,12 +563,12 @@ pub const Reader = struct {
             } else switch (b) {
                 '\\' => in_escape = true,
                 '"' => return,
-                else => try self.token.append(b),
+                else => try self.token.append(self.gpa, b),
             }
         }
     }
 
-    fn read(self: *Reader) anyerror!void {
+    fn read(self: *Reader) !void {
         try self.skip_whitespace(true);
         self.token_start_ctx = self.ctx;
         if (try self.consume_byte()) |b| {
@@ -562,7 +607,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn is_compact(self: *Reader) anyerror!bool {
+    pub fn is_compact(self: *Reader) !bool {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -573,7 +618,7 @@ pub const Reader = struct {
         self.peek = peek;
     }
 
-    pub fn any(self: *Reader) anyerror!void {
+    pub fn any(self: *Reader) !void {
         if (!self.peek) {
             if (self.state == .unknown) {
                 try self.read();
@@ -582,7 +627,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn open(self: *Reader) anyerror!bool {
+    pub fn open(self: *Reader) !bool {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -603,13 +648,13 @@ pub const Reader = struct {
         }
     }
 
-    pub fn require_open(self: *Reader) anyerror!void {
+    pub fn require_open(self: *Reader) !void {
         if (!try self.open()) {
             return error.SExpressionSyntaxError;
         }
     }
 
-    pub fn close(self: *Reader) anyerror!bool {
+    pub fn close(self: *Reader) !bool {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -622,13 +667,13 @@ pub const Reader = struct {
         }
     }
 
-    pub fn require_close(self: *Reader) anyerror!void {
+    pub fn require_close(self: *Reader) !void {
         if (!try self.close()) {
             return error.SExpressionSyntaxError;
         }
     }
 
-    pub fn done(self: *Reader) anyerror!bool {
+    pub fn done(self: *Reader) !bool {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -636,13 +681,13 @@ pub const Reader = struct {
         return self.state == .eof;
     }
 
-    pub fn require_done(self: *Reader) anyerror!void {
+    pub fn require_done(self: *Reader) !void {
         if (!try self.done()) {
             return error.SExpressionSyntaxError;
         }
     }
 
-    pub fn expression(self: *Reader, expected: []const u8) anyerror!bool {
+    pub fn expression(self: *Reader, expected: []const u8) !bool {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -655,7 +700,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn require_expression(self: *Reader, expected: []const u8) anyerror!void {
+    pub fn require_expression(self: *Reader, expected: []const u8) !void {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -667,7 +712,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn any_expression(self: *Reader) anyerror!?[]const u8 {
+    pub fn any_expression(self: *Reader) !?[]const u8 {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -680,7 +725,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn require_any_expression(self: *Reader) anyerror![]const u8 {
+    pub fn require_any_expression(self: *Reader) ![]const u8 {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -693,7 +738,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn string(self: *Reader, expected: []const u8) anyerror!bool {
+    pub fn string(self: *Reader, expected: []const u8) !bool {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -705,7 +750,7 @@ pub const Reader = struct {
             return false;
         }
     }
-    pub fn require_string(self: *Reader, expected: []const u8) anyerror!void {
+    pub fn require_string(self: *Reader, expected: []const u8) !void {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -717,7 +762,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn any_string(self: *Reader) anyerror!?[]const u8 {
+    pub fn any_string(self: *Reader) !?[]const u8 {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -729,7 +774,7 @@ pub const Reader = struct {
             return null;
         }
     }
-    pub fn require_any_string(self: *Reader) anyerror![]const u8 {
+    pub fn require_any_string(self: *Reader) ![]const u8 {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -742,7 +787,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn any_boolean(self: *Reader) anyerror!?bool {
+    pub fn any_boolean(self: *Reader) !?bool {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -767,11 +812,11 @@ pub const Reader = struct {
         try self.any();
         return value;
     }
-    pub fn require_any_boolean(self: *Reader) anyerror!bool {
+    pub fn require_any_boolean(self: *Reader) !bool {
         return try self.any_boolean() orelse error.SExpressionSyntaxError;
     }
 
-    pub fn any_enum(self: *Reader, comptime T: type) anyerror!?T {
+    pub fn any_enum(self: *Reader, comptime T: type) !?T {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -787,12 +832,12 @@ pub const Reader = struct {
 
         return null;
     }
-    pub fn require_any_enum(self: *Reader, comptime T: type) anyerror!T {
+    pub fn require_any_enum(self: *Reader, comptime T: type) !T {
         return try self.any_enum(T) orelse error.SExpressionSyntaxError;
     }
 
     // Takes a std.StaticStringMap to convert strings into the enum
-    pub fn map_enum(self: *Reader, comptime T: type, map: anytype) anyerror!?T {
+    pub fn map_enum(self: *Reader, comptime T: type, map: anytype) !?T {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -809,11 +854,11 @@ pub const Reader = struct {
         return null;
     }
 
-    pub fn require_map_enum(self: *Reader, comptime T: type, map: anytype) anyerror!T {
+    pub fn require_map_enum(self: *Reader, comptime T: type, map: anytype) !T {
         return try self.map_enum(T, map) orelse error.SExpressionSyntaxError;
     }
 
-    pub fn any_float(self: *Reader, comptime T: type) anyerror!?T {
+    pub fn any_float(self: *Reader, comptime T: type) !?T {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -826,11 +871,11 @@ pub const Reader = struct {
         try self.any();
         return value;
     }
-    pub fn require_any_float(self: *Reader, comptime T: type) anyerror!T {
+    pub fn require_any_float(self: *Reader, comptime T: type) !T {
         return try self.any_float(T) orelse error.SExpressionSyntaxError;
     }
 
-    pub fn any_int(self: *Reader, comptime T: type, radix: u8) anyerror!?T {
+    pub fn any_int(self: *Reader, comptime T: type, radix: u8) !?T {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -843,11 +888,11 @@ pub const Reader = struct {
         try self.any();
         return value;
     }
-    pub fn require_any_int(self: *Reader, comptime T: type, radix: u8) anyerror!T {
+    pub fn require_any_int(self: *Reader, comptime T: type, radix: u8) !T {
         return try self.any_int(T, radix) orelse error.SExpressionSyntaxError;
     }
 
-    pub fn any_unsigned(self: *Reader, comptime T: type, radix: u8) anyerror!?T {
+    pub fn any_unsigned(self: *Reader, comptime T: type, radix: u8) !?T {
         if (self.state == .unknown) {
             try self.read();
         }
@@ -860,12 +905,12 @@ pub const Reader = struct {
         try self.any();
         return value;
     }
-    pub fn require_any_unsigned(self: *Reader, comptime T: type, radix: u8) anyerror!T {
+    pub fn require_any_unsigned(self: *Reader, comptime T: type, radix: u8) !T {
         return try self.any_unsigned(T, radix) orelse error.SExpressionSyntaxError;
     }
 
 
-    pub fn object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) anyerror!?T {
+    pub fn object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) !?T {
         const obj: T = switch (@typeInfo(T)) {
             .@"bool" => if (try self.any_boolean()) |val| val else return null,
             .int => if (try self.any_int(T, 0)) |val| val else return null,
@@ -879,12 +924,12 @@ pub const Reader = struct {
                             break :blk try arena.dupe(u8, val);
                         } else return null;
                     } else {
-                        var temp = std.ArrayList(info.child).init(self.token.allocator);
-                        defer temp.deinit();
+                        var temp: std.ArrayList(info.child) = .empty;
+                        defer temp.deinit(self.gpa);
                         var i: usize = 0;
                         while (true) : (i += 1) {
                             if (try self.object(arena, info.child, Context)) |raw| {
-                                try temp.append(raw);
+                                try temp.append(self.gpa, raw);
                             } else break;
                         }
                         break :blk try arena.dupe(info.child, temp.items);
@@ -934,7 +979,7 @@ pub const Reader = struct {
             .@"struct" => |info| blk: {
                 var temp: ArrayList_Struct(T) = .{};
                 defer inline for (@typeInfo(@TypeOf(temp)).@"struct".fields) |field| {
-                    @field(temp, field.name).deinit(self.token.allocator);
+                    @field(temp, field.name).deinit(self.gpa);
                 };
 
                 try self.parse_struct_fields(arena, T, &temp, Context);
@@ -979,11 +1024,11 @@ pub const Reader = struct {
 
         return obj;
     }
-    pub fn require_object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) anyerror!T {
+    pub fn require_object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) !T {
         return (try self.object(arena, T, Context)) orelse error.SExpressionSyntaxError;
     }
 
-    fn parse_struct_fields(self: *Reader, arena: std.mem.Allocator, comptime T: type, temp: *ArrayList_Struct(T), comptime Context: type) anyerror!void {
+    fn parse_struct_fields(self: *Reader, arena: std.mem.Allocator, comptime T: type, temp: *ArrayList_Struct(T), comptime Context: type) !void {
         const struct_fields = @typeInfo(T).@"struct".fields;
 
         const has_inline_fields = @hasDecl(Context, "inline_fields") and !@hasField(T, "inline_fields");
@@ -997,7 +1042,7 @@ pub const Reader = struct {
             var i: usize = 0;
             while (max_children == null or i < max_children.?) : (i += 1) {
                 const arraylist_ptr = &@field(temp.*, field_name);
-                try arraylist_ptr.ensureUnusedCapacity(self.token.allocator, 1);
+                try arraylist_ptr.ensureUnusedCapacity(self.gpa, 1);
                 if (try self.object_child(arena, Unwrapped, false, field_name, Context)) |raw| {
                     arraylist_ptr.appendAssumeCapacity(raw);
                 } else break;
@@ -1012,7 +1057,7 @@ pub const Reader = struct {
                     const check_this_field = if (max_child_items(field.type)) |max| arraylist_ptr.items.len < max else true;
                     if (check_this_field) {
                         const Unwrapped = @TypeOf(@field(temp, field.name).items[0]);
-                        try @field(temp.*, field.name).ensureUnusedCapacity(self.token.allocator, 1);
+                        try @field(temp.*, field.name).ensureUnusedCapacity(self.gpa, 1);
                         if (try self.object_child(arena, Unwrapped, true, field.name, Context)) |raw| {
                             @field(temp.*, field.name).appendAssumeCapacity(raw);
                             found_field = true;
@@ -1025,7 +1070,7 @@ pub const Reader = struct {
         }
     }
 
-    fn object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!?T {
+    fn object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) !?T {
         const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
         switch (@typeInfo(@TypeOf(Child_Context))) {
             .@"fn" => return Child_Context(arena, self, wrap),
@@ -1070,12 +1115,12 @@ pub const Reader = struct {
             else => @compileError("Expected child context to be a struct or function declaration"),
         }
     }
-    fn require_object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) anyerror!T {
+    fn require_object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) !T {
         return (try self.object_child(arena, T, wrap, field_name, Parent_Context)) orelse error.SExpressionSyntaxError;
     }
 
     // note this consumes the current expression's closing parenthesis
-    pub fn ignore_remaining_expression(self: *Reader) anyerror!void {
+    pub fn ignore_remaining_expression(self: *Reader) !void {
         var depth: usize = 1;
         while (self.state != .eof and depth > 0) {
             if (self.state == .unknown) {
@@ -1091,7 +1136,7 @@ pub const Reader = struct {
         }
     }
 
-    pub fn token_context(self: *Reader) anyerror!Token_Context {
+    pub fn token_context(self: *Reader) !Token_Context {
         if (self.state == .unknown) {
             try self.read();
         }
