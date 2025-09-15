@@ -1156,7 +1156,7 @@ pub const Token_Context = struct {
     start_offset: usize,
     end_offset: usize,
 
-    pub fn print_for_string(self: Token_Context, source: []const u8, print_writer: anytype, max_line_width: usize) !void {
+    pub fn print_for_string(self: Token_Context, source: []const u8, w: *std.io.Writer, max_line_width: usize) !void {
         var offset = self.prev_line_offset;
         var line_number = self.start_line_number;
         if (line_number > 1) {
@@ -1165,9 +1165,9 @@ pub const Token_Context = struct {
         var iter = std.mem.splitScalar(u8, source[offset..], '\n');
         while (iter.next()) |line| {
             if (std.mem.endsWith(u8, line, "\r")) {
-                try print_line(self, print_writer, line_number, offset, line[0..line.len - 1], max_line_width);
+                try print_line(self, w, line_number, offset, line[0..line.len - 1], max_line_width);
             } else {
-                try print_line(self, print_writer, line_number, offset, line, max_line_width);
+                try print_line(self, w, line_number, offset, line, max_line_width);
             }
 
             if (offset >= self.end_offset) {
@@ -1179,7 +1179,7 @@ pub const Token_Context = struct {
         }
     }
 
-    pub fn print_for_file(self: Token_Context, source: *std.fs.File, print_writer: anytype, comptime max_line_width: usize) !void {
+    pub fn print_for_file(self: Token_Context, source: *std.fs.File, w: *std.io.Writer, comptime max_line_width: usize) !void {
         const originalPos = try source.getPos();
         errdefer source.seekTo(originalPos) catch {}; // best effort not to change file position in case of error
 
@@ -1196,9 +1196,9 @@ pub const Token_Context = struct {
         var line_length: usize = undefined;
         while (try read_file_line(file_reader, &line_buf, &line_length)) |line| {
             if (std.mem.endsWith(u8, line, "\r")) {
-                try print_line(self, print_writer, line_number, offset, line[0..line.len - 1], max_line_width);
+                try print_line(self, w, line_number, offset, line[0..line.len - 1], max_line_width);
             } else {
-                try print_line(self, print_writer, line_number, offset, line, max_line_width);
+                try print_line(self, w, line_number, offset, line, max_line_width);
             }
 
             if (offset >= self.end_offset) {
@@ -1212,97 +1212,92 @@ pub const Token_Context = struct {
         try source.seekTo(originalPos);
     }
 
-    fn read_file_line(file_reader: anytype, buffer: []u8, line_length: *usize) !?[]u8 {
-        const line = file_reader.readUntilDelimiterOrEof(buffer, '\n') catch |e| switch (e) {
-            error.StreamTooLong => {
+    fn read_file_line(r: *std.io.Reader, buffer: []u8, line_length: *usize) !?[]u8 {
+        var bw = std.io.Writer.fixed(buffer);
+        r.streamDelimiter(bw, '\n') catch |e| switch (e) {
+            error.WriteFailed => {
                 var length = buffer.len;
 
-                while (true) {
-                    const byte = file_reader.readByte() catch |err| switch (err) {
-                        error.EndOfStream => break,
-                        else => return err,
-                    };
-                    if (byte == '\n') break;
-                    length += 1;
-                }
+                length += try r.discardDelimiterExclusive('\n');
 
                 line_length.* = length;
                 return buffer;
             },
+            error.EndOfStream => {},
             else => return e,
         };
-        line_length.* = (line orelse "").len;
-        return line;
+        line_length.* = bw.buffered().len;
+        return bw.buffered();
     }
 
-    fn print_line(self: Token_Context, print_writer: anytype, line_number: usize, offset: usize, line: []const u8, max_line_width: usize) !void {
-        try print_line_number(print_writer, self.start_line_number, line_number);
+    fn print_line(self: Token_Context, w: *std.io.Writer, line_number: usize, offset: usize, line: []const u8, max_line_width: usize) !void {
+        try print_line_number(w, self.start_line_number, line_number);
 
         const end_of_line = offset + line.len;
         var end_of_display = end_of_line;
         if (line.len > max_line_width) {
-            try print_writer.writeAll(line[0..max_line_width - 3]);
-            try print_writer.writeAll("...\n");
+            try w.writeAll(line[0..max_line_width - 3]);
+            try w.writeAll("...\n");
             end_of_display = offset + max_line_width - 3;
         } else {
-            try print_writer.writeAll(line);
-            try print_writer.writeAll("\n");
+            try w.writeAll(line);
+            try w.writeAll("\n");
         }
 
         if (self.start_offset < end_of_line and self.end_offset > offset) {
-            try print_line_number_padding(print_writer, self.start_line_number);
+            try print_line_number_padding(w, self.start_line_number);
             if (self.start_offset <= offset) {
                 if (self.end_offset >= end_of_display) {
                     // highlight full line
                     if (line.len > max_line_width and self.end_offset > end_of_display) {
-                        try print_writer.writeByteNTimes('^', max_line_width - 3);
-                        try print_writer.writeAll("   ^");
+                        try w.splatByteAll('^', max_line_width - 3);
+                        try w.writeAll("   ^");
                     } else {
-                        try print_writer.writeByteNTimes('^', end_of_display - offset);
+                        try w.splatByteAll('^', end_of_display - offset);
                     }
                 } else {
                     // highlight start of line
-                    try print_writer.writeByteNTimes('^', self.end_offset - offset);
+                    try w.splatByteAll('^', self.end_offset - offset);
                 }
             } else if (self.end_offset >= end_of_display) {
                 // highlight end of line
                 if (line.len > max_line_width and self.end_offset > end_of_display) {
                     if (self.start_offset < end_of_display) {
-                        try print_writer.writeByteNTimes(' ', self.start_offset - offset);
-                        try print_writer.writeByteNTimes('^', end_of_display - self.start_offset);
+                        try w.splatByteAll(' ', self.start_offset - offset);
+                        try w.splatByteAll('^', end_of_display - self.start_offset);
                     } else {
-                        try print_writer.writeByteNTimes(' ', max_line_width - 3);
+                        try w.splatByteAll(' ', max_line_width - 3);
                     }
-                    try print_writer.writeAll("   ^");
+                    try w.writeAll("   ^");
                 } else {
-                    try print_writer.writeByteNTimes(' ', self.start_offset - offset);
-                    try print_writer.writeByteNTimes('^', end_of_display - self.start_offset);
+                    try w.splatByteAll(' ', self.start_offset - offset);
+                    try w.splatByteAll('^', end_of_display - self.start_offset);
                 }
             } else {
                 // highlight within line
-                try print_writer.writeByteNTimes(' ', self.start_offset - offset);
-                try print_writer.writeByteNTimes('^', self.end_offset - self.start_offset);
+                try w.splatByteAll(' ', self.start_offset - offset);
+                try w.splatByteAll('^', self.end_offset - self.start_offset);
             }
-            try print_writer.writeAll("\n");
+            try w.writeAll("\n");
         }
     }
 
-    fn print_line_number(print_writer: anytype, initial_line: usize, line: usize) !void {
+    fn print_line_number(w: *std.io.Writer, initial_line: usize, line: usize) !void {
         if (initial_line < 1000) {
-            try print_writer.print("{:>4} |", .{ line });
+            try w.print("{:>4} |", .{ line });
         } else if (initial_line < 100_000) {
-            try print_writer.print("{:>6} |", .{ line });
+            try w.print("{:>6} |", .{ line });
         } else {
-            try print_writer.print("{:>8} |", .{ line });
+            try w.print("{:>8} |", .{ line });
         }
     }
-    fn print_line_number_padding(print_writer: anytype, initial_line: usize) !void {
+    fn print_line_number_padding(w: *std.io.Writer, initial_line: usize) !void {
         if (initial_line < 1000) {
-            try print_writer.writeAll("     |");
+            try w.writeAll("     |");
         } else if (initial_line < 100_000) {
-            try print_writer.writeAll("       |");
+            try w.writeAll("       |");
         } else {
-            try print_writer.writeAll("         |");
+            try w.writeAll("         |");
         }
     }
 };

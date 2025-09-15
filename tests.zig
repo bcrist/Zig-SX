@@ -28,17 +28,17 @@ test "sx.Reader" {
     defer reader.deinit();
 
     var buf: [4096]u8 = undefined;
-    var buf_stream = std.io.fixedBufferStream(&buf);
+    var w = std.io.Writer.fixed(&buf);
 
     var ctx = try reader.token_context();
-    try ctx.print_for_string(str, buf_stream.writer(), 80);
+    try ctx.print_for_string(str, &w, 80);
     try expectEqualStrings(
         \\   1 |(test 1 (1 2)
         \\     |^^^^^
         \\   2 |  2 -3 ( "  
         \\
-    , buf_stream.getWritten());
-    buf_stream.reset();
+    , w.buffered());
+    w.end = 0;
 
     try expectEqual(try reader.expression("asdf"), false);
     try reader.require_expression("test");
@@ -53,7 +53,7 @@ test "sx.Reader" {
     try reader.require_open();
 
     ctx = try reader.token_context();
-    try ctx.print_for_string(str, buf_stream.writer(), 80);
+    try ctx.print_for_string(str, &w, 80);
     try expectEqualStrings(
         \\   1 |(test 1 (1 2)
         \\   2 |  2 -3 ( "  
@@ -62,8 +62,8 @@ test "sx.Reader" {
         \\     |^
         \\   4 |  () a b c
         \\
-    , buf_stream.getWritten());
-    buf_stream.reset();
+    , w.buffered());
+    w.end = 0;
 
     try reader.require_string("  \n");
     try expectEqual(try reader.string("x"), false);
@@ -80,15 +80,15 @@ test "sx.Reader" {
     try reader.ignore_remaining_expression();
 
     ctx = try reader.token_context();
-    try ctx.print_for_string(str, buf_stream.writer(), 80);
+    try ctx.print_for_string(str, &w, 80);
     try expectEqualStrings(
         \\   7 |
         \\   8 | true
         \\     | ^^^^
         \\   9 | 0x20
         \\
-    , buf_stream.getWritten());
-    buf_stream.reset();
+    , w.buffered());
+    w.end = 0;
 
     const Ctx = struct {
         pub fn type_name(comptime T: type) []const u8 {
