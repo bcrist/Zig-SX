@@ -133,6 +133,13 @@ pub const Writer = struct {
         }
     }
 
+    pub fn string_quoted(self: *Writer, str: []const u8) !void {
+        try self.spacing();
+        try self.inner.writeByte('"');
+        _ = try write_escaped(self.inner, str);
+        try self.inner.writeByte('"');
+    }
+
     pub fn float(self: *Writer, val: anytype) !void {
         try self.spacing();
         switch (@typeInfo(@TypeOf(val))) {
@@ -444,6 +451,7 @@ pub const Reader = struct {
     next_byte: ?u8,
     gpa: std.mem.Allocator,
     token: std.ArrayList(u8),
+    token_was_quoted: bool,
     compact: bool,
     peek: bool,
     state: State,
@@ -464,6 +472,7 @@ pub const Reader = struct {
             .next_byte = null,
             .gpa = gpa,
             .token = .empty,
+            .token_was_quoted = false,
             .compact = true,
             .peek = false,
             .state = .unknown,
@@ -525,6 +534,7 @@ pub const Reader = struct {
 
     fn read_unquoted_val(self: *Reader) !void {
         self.token.clearRetainingCapacity();
+        self.token_was_quoted = false;
 
         while (try self.consume_byte()) |b| {
             switch (b) {
@@ -541,6 +551,7 @@ pub const Reader = struct {
 
     fn read_quoted_val(self: *Reader) !void {
         self.token.clearRetainingCapacity();
+        self.token_was_quoted = true;
 
         var in_escape = false;
         while (try self.consume_byte()) |b| {
@@ -762,6 +773,30 @@ pub const Reader = struct {
         }
     }
 
+    pub fn string_quoted(self: *Reader, expected: []const u8) !bool {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val and self.token_was_quoted and std.mem.eql(u8, self.token.items, expected)) {
+            try self.any();
+            return true;
+        } else {
+            return false;
+        }
+    }
+    pub fn require_string_quoted(self: *Reader, expected: []const u8) !void {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val and self.token_was_quoted and std.mem.eql(u8, self.token.items, expected)) {
+            try self.any();
+        } else {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
     pub fn any_string(self: *Reader) !?[]const u8 {
         if (self.state == .unknown) {
             try self.read();
@@ -780,6 +815,31 @@ pub const Reader = struct {
         }
 
         if (self.state == .val) {
+            try self.any();
+            return self.token.items;
+        } else {
+            return error.SExpressionSyntaxError;
+        }
+    }
+
+    pub fn any_string_quoted(self: *Reader) !?[]const u8 {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val and self.token_was_quoted) {
+            try self.any();
+            return self.token.items;
+        } else {
+            return null;
+        }
+    }
+    pub fn require_any_string_quoted(self: *Reader) ![]const u8 {
+        if (self.state == .unknown) {
+            try self.read();
+        }
+
+        if (self.state == .val and self.token_was_quoted) {
             try self.any();
             return self.token.items;
         } else {
