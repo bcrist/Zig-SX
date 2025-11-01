@@ -362,6 +362,16 @@ pub const Writer = struct {
         try self.string(w.buffered());
     }
 
+    pub fn print_quoted(self: *Writer, comptime format: []const u8, args: anytype) !void {
+        var buf: [64]u8 = undefined;
+        try self.spacing();
+        try self.inner.writeByte('"');
+        var ew: Escaped_Writer = .init(self.inner, &buf);
+        try ew.writer.print(format, args);
+        try ew.writer.flush();
+        try self.inner.writeByte('"');
+    }
+
     const Escaped_Writer = struct {
         out: *std.io.Writer,
         writer: std.io.Writer,
