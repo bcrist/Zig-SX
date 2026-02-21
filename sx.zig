@@ -1,20 +1,20 @@
-pub fn writer(allocator: std.mem.Allocator, w: *std.io.Writer) Writer {
+pub fn writer(allocator: std.mem.Allocator, w: *std.Io.Writer) Writer {
     return Writer.init(allocator, w);
 }
 
-pub fn reader(allocator: std.mem.Allocator, r: *std.io.Reader) Reader {
+pub fn reader(allocator: std.mem.Allocator, r: *std.Io.Reader) Reader {
     return Reader.init(allocator, r);
 }
 
 pub const Writer = struct {
-    inner: *std.io.Writer,
+    inner: *std.Io.Writer,
     indent: []const u8,
     gpa: std.mem.Allocator,
     compact_state: std.ArrayList(bool),
     first_in_group: bool,
     wrote_non_compact_item: bool,
 
-    pub fn init(gpa: std.mem.Allocator, w: *std.io.Writer) Writer {
+    pub fn init(gpa: std.mem.Allocator, w: *std.Io.Writer) Writer {
         return .{
             .inner = w,
             .indent = "   ",
@@ -349,7 +349,7 @@ pub const Writer = struct {
 
     pub fn print_value(self: *Writer, comptime format: []const u8, args: anytype) !void {
         var buf: [1024]u8 = undefined;
-        var w = std.io.Writer.fixed(&buf);
+        var w = std.Io.Writer.fixed(&buf);
         w.print(format, args) catch {
             try self.spacing();
             try self.inner.writeByte('"');
@@ -373,11 +373,11 @@ pub const Writer = struct {
     }
 
     const Escaped_Writer = struct {
-        out: *std.io.Writer,
-        writer: std.io.Writer,
+        out: *std.Io.Writer,
+        writer: std.Io.Writer,
         done: bool,
 
-        pub fn init(out: *std.io.Writer, buffer: []u8) Escaped_Writer {
+        pub fn init(out: *std.Io.Writer, buffer: []u8) Escaped_Writer {
             return .{
                 .out = out,
                 .writer = .{
@@ -388,7 +388,7 @@ pub const Writer = struct {
             };
         }
 
-        fn drain(w: *std.io.Writer, data: []const []const u8, splat: usize) std.io.Writer.Error!usize {
+        fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
             const self: *Escaped_Writer = @alignCast(@fieldParentPtr("writer", w));
             const aux = w.buffered();
             var n = try write_escaped(self.out, aux);
@@ -415,7 +415,7 @@ pub const Writer = struct {
 
 };
 
-fn write_escaped(w: *std.io.Writer, bytes: []const u8) std.io.Writer.Error!usize {
+fn write_escaped(w: *std.Io.Writer, bytes: []const u8) std.Io.Writer.Error!usize {
     var i: usize = 0;
     while (i < bytes.len) : (i += 1) {
         var c = bytes[i];
@@ -457,7 +457,7 @@ pub const Reader = struct {
         eof = 4
     };
 
-    inner: *std.io.Reader,
+    inner: *std.Io.Reader,
     next_byte: ?u8,
     gpa: std.mem.Allocator,
     token: std.ArrayList(u8),
@@ -476,7 +476,7 @@ pub const Reader = struct {
         line_number: usize = 1,
     };
 
-    pub fn init(gpa: std.mem.Allocator, r: *std.io.Reader) Reader {
+    pub fn init(gpa: std.mem.Allocator, r: *std.Io.Reader) Reader {
         return .{
             .inner = r,
             .next_byte = null,
@@ -1226,7 +1226,7 @@ pub const Token_Context = struct {
     start_offset: usize,
     end_offset: usize,
 
-    pub fn print_for_string(self: Token_Context, source: []const u8, w: *std.io.Writer, max_line_width: usize) !void {
+    pub fn print_for_string(self: Token_Context, source: []const u8, w: *std.Io.Writer, max_line_width: usize) !void {
         var offset = self.prev_line_offset;
         var line_number = self.start_line_number;
         if (line_number > 1) {
@@ -1249,7 +1249,7 @@ pub const Token_Context = struct {
         }
     }
 
-    pub fn print_for_file(self: Token_Context, source: *std.fs.File, w: *std.io.Writer, comptime max_line_width: usize) !void {
+    pub fn print_for_file(self: Token_Context, source: *std.fs.File, w: *std.Io.Writer, comptime max_line_width: usize) !void {
         const originalPos = try source.getPos();
         errdefer source.seekTo(originalPos) catch {}; // best effort not to change file position in case of error
 
@@ -1260,7 +1260,7 @@ pub const Token_Context = struct {
         }
 
         try source.seekTo(self.prev_line_offset);
-        var br = std.io.bufferedReader(source.reader());
+        var br = std.Io.bufferedReader(source.reader());
         const file_reader = br.reader();
         var line_buf: [max_line_width + 1]u8 = undefined;
         var line_length: usize = undefined;
@@ -1282,8 +1282,8 @@ pub const Token_Context = struct {
         try source.seekTo(originalPos);
     }
 
-    fn read_file_line(r: *std.io.Reader, buffer: []u8, line_length: *usize) !?[]u8 {
-        var bw = std.io.Writer.fixed(buffer);
+    fn read_file_line(r: *std.Io.Reader, buffer: []u8, line_length: *usize) !?[]u8 {
+        var bw = std.Io.Writer.fixed(buffer);
         r.streamDelimiter(bw, '\n') catch |e| switch (e) {
             error.WriteFailed => {
                 var length = buffer.len;
@@ -1300,7 +1300,7 @@ pub const Token_Context = struct {
         return bw.buffered();
     }
 
-    fn print_line(self: Token_Context, w: *std.io.Writer, line_number: usize, offset: usize, line: []const u8, max_line_width: usize) !void {
+    fn print_line(self: Token_Context, w: *std.Io.Writer, line_number: usize, offset: usize, line: []const u8, max_line_width: usize) !void {
         try print_line_number(w, self.start_line_number, line_number);
 
         const end_of_line = offset + line.len;
@@ -1352,7 +1352,7 @@ pub const Token_Context = struct {
         }
     }
 
-    fn print_line_number(w: *std.io.Writer, initial_line: usize, line: usize) !void {
+    fn print_line_number(w: *std.Io.Writer, initial_line: usize, line: usize) !void {
         if (initial_line < 1000) {
             try w.print("{:>4} |", .{ line });
         } else if (initial_line < 100_000) {
@@ -1361,7 +1361,7 @@ pub const Token_Context = struct {
             try w.print("{:>8} |", .{ line });
         }
     }
-    fn print_line_number_padding(w: *std.io.Writer, initial_line: usize) !void {
+    fn print_line_number_padding(w: *std.Io.Writer, initial_line: usize) !void {
         if (initial_line < 1000) {
             try w.writeAll("     |");
         } else if (initial_line < 100_000) {
@@ -1386,24 +1386,20 @@ fn ArrayList_Struct(comptime S: type) type {
     return comptime blk: {
         const info = @typeInfo(S).@"struct";
 
-        var arraylist_fields: [info.fields.len]std.builtin.Type.StructField = undefined;
-        for (&arraylist_fields, info.fields) |*arraylist_field, field| {
+        var field_names: [info.fields.len][]const u8 = undefined;
+        var field_types: [info.fields.len]type = undefined;
+        var field_attrs: [info.fields.len]std.builtin.Type.StructField.Attributes = undefined;
+        for (&field_names, &field_types, &field_attrs, info.fields) |*field_name, *field_type, *field_attr, field| {
             const ArrayList_Field = ArrayListify(field.type);
-            arraylist_field.* = .{
-                .name = field.name,
-                .type = ArrayList_Field,
+            field_name.* = field.name;
+            field_type.* = ArrayList_Field;
+            field_attr.* = .{
+                .@"align" = @alignOf(ArrayList_Field),
                 .default_value_ptr = &@as(ArrayList_Field, .{}),
-                .is_comptime = false,
-                .alignment = @alignOf(ArrayList_Field),
             };
         }
 
-        break :blk @Type(.{ .@"struct" = .{
-            .layout = .auto,
-            .fields = &arraylist_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        }});
+        break :blk @Struct(.auto, null, &field_names, &field_types, &field_attrs);
     };
 }
 

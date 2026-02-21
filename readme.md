@@ -25,8 +25,8 @@ var source =
     \\
 ;
 
-var stream = std.io.fixedBufferStream(source);
-var reader = sx.reader(std.testing.allocator, stream.reader());
+var string_reader = std.Io.Reader.fixed(source);
+var reader = sx.reader(std.testing.allocator, &string_reader);
 defer reader.deinit();
 
 try reader.require_expression("box");
@@ -66,7 +66,10 @@ try reader.require_done();
 const std = @import("std");
 const sx = @import("sx");
 
-var writer = sx.writer(std.testing.allocator, std.io.getStdOut().writer());
+var stdout_buffer: [64]u8 = undefined;
+var stdout_writer = std.Io.File.stdout.writer(io, &stdout_buffer);
+
+var writer = sx.writer(std.testing.allocator, &stdout_writer.interface);
 defer writer.deinit();
 
 try writer.expression("box");

@@ -23,12 +23,12 @@ test "sx.Reader" {
         \\ (d multiple-words)
         \\
         ;
-    var stream = std.io.Reader.fixed(str);
+    var stream = std.Io.Reader.fixed(str);
     var reader = sx.reader(std.testing.allocator, &stream);
     defer reader.deinit();
 
     var buf: [4096]u8 = undefined;
-    var w = std.io.Writer.fixed(&buf);
+    var w = std.Io.Writer.fixed(&buf);
 
     var ctx = try reader.token_context();
     try ctx.print_for_string(str, &w, 80);
@@ -187,7 +187,7 @@ test "sx.Writer" {
     ;
 
     var buf: [4096]u8 = undefined;
-    var w = std.io.Writer.fixed(&buf);
+    var w = std.Io.Writer.fixed(&buf);
 
     var writer = sx.writer(std.testing.allocator, &w);
     defer writer.deinit();
@@ -296,7 +296,7 @@ test "read struct with inline fields" {
         \\(multi 1234)
         \\
         ;
-    var r = std.io.Reader.fixed(str);
+    var r = std.Io.Reader.fixed(str);
     var reader = sx.reader(std.testing.allocator, &r);
     defer reader.deinit();
 
@@ -339,7 +339,7 @@ test "write struct with inline fields" {
     };
 
     var buf: [4096]u8 = undefined;
-    var w = std.io.Writer.fixed(&buf);
+    var w = std.Io.Writer.fixed(&buf);
 
     var writer = sx.writer(std.testing.allocator, &w);
     defer writer.deinit();
