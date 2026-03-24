@@ -1395,7 +1395,7 @@ fn ArrayList_Struct(comptime S: type) type {
             field_type.* = ArrayList_Field;
             field_attr.* = .{
                 .@"align" = @alignOf(ArrayList_Field),
-                .default_value_ptr = &@as(ArrayList_Field, .{}),
+                .default_value_ptr = &@as(ArrayList_Field, .empty),
             };
         }
 
