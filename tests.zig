@@ -1,28 +1,5 @@
 test "sx.Reader" {
-    const str =
-        \\(test 1 (1 2)
-        \\  2 -3 ( "  
-        \\" 4 5 6)
-        \\  () a b c
-        \\)
-        \\
-        \\
-        \\ true
-        \\ 0x20
-        \\ 0.35
-        \\ unsigned
-        \\ "hello world"
-        \\ 1 2 3 4
-        \\ "hello world 2"
-        \\ 1 2 3
-        \\ nil 1234
-        \\ x y 1
-        \\ (a asdf)
-        \\ (b 1)
-        \\ (c 2)
-        \\ (d multiple-words)
-        \\
-        ;
+    const str = @embedFile("test/test1.sx");
     var stream = std.Io.Reader.fixed(str);
     var reader = sx.reader(std.testing.allocator, &stream);
     defer reader.deinit();
@@ -156,35 +133,83 @@ test "sx.Reader" {
     try reader.require_done();
 }
 
+test "sx.Reader from file" {
+    // Note: cwd is expected to be the repo root
+    var file = try std.Io.Dir.cwd().openFile(std.testing.io, "test/test1.sx", .{});
+    defer file.close(std.testing.io);
+
+    var reader_buf: [64]u8 = undefined;
+    var file_reader = file.reader(std.testing.io, &reader_buf);
+
+    var reader = sx.reader(std.testing.allocator, &file_reader.interface);
+    defer reader.deinit();
+
+    var writer_buf: [4096]u8 = undefined;
+    var w = std.Io.Writer.fixed(&writer_buf);
+
+    var ctx = try reader.token_context();
+    try ctx.print_for_file(&file_reader, &w, 80);
+    try expectEqualStrings(
+        \\   1 |(test 1 (1 2)
+        \\     |^^^^^
+        \\   2 |  2 -3 ( "  
+        \\
+    , w.buffered());
+    w.end = 0;
+
+    try expectEqual(try reader.expression("asdf"), false);
+    try reader.require_expression("test");
+    try expectEqual(try reader.open(), false);
+    try expectEqual(try reader.close(), false);
+    try expectEqual(try reader.require_any_unsigned(usize, 10), @as(usize, 1));
+    try expectEqualStrings(try reader.require_any_expression(), "1");
+    try expectEqual(try reader.any_expression(), null);
+    try reader.ignore_remaining_expression();
+    try expectEqual(try reader.require_any_unsigned(usize, 0), @as(usize, 2));
+    try expectEqual(try reader.require_any_int(i8, 0), @as(i8, -3));
+    try reader.require_open();
+
+    ctx = try reader.token_context();
+    try ctx.print_for_file(&file_reader, &w, 80);
+    try expectEqualStrings(
+        \\   1 |(test 1 (1 2)
+        \\   2 |  2 -3 ( "  
+        \\     |         ^^^
+        \\   3 |" 4 5 6)
+        \\     |^
+        \\   4 |  () a b c
+        \\
+    , w.buffered());
+    w.end = 0;
+
+    try reader.require_string("  \n");
+    try expectEqual(try reader.string("x"), false);
+    try reader.require_string("4");
+    try expectEqual(try reader.require_any_float(f32), @as(f32, 5));
+    try expectEqualStrings(try reader.require_any_string(), "6");
+    try expectEqual(try reader.any_string(), null);
+    try expectEqual(try reader.any_float(f32), null);
+    try expectEqual(try reader.any_int(u12, 0), null);
+    try expectEqual(try reader.any_unsigned(u12, 0), null);
+    try reader.require_close();
+    try reader.require_open();
+    try reader.require_close();
+    try reader.ignore_remaining_expression();
+
+    ctx = try reader.token_context();
+    try ctx.print_for_file(&file_reader, &w, 80);
+    try expectEqualStrings(
+        \\   7 |
+        \\   8 | true
+        \\     | ^^^^
+        \\   9 | 0x20
+        \\
+    , w.buffered());
+    w.end = 0;
+}
+
 test "sx.Writer" {
-    const expected =
-      \\(box my-box
-      \\   (dimensions 4.3 7 14)
-      \\   (color red)
-      \\   (contents
-      \\      42
-      \\      "Big Phil's To Do List:\n - paint it black\n - clean up around the house\n"
-      \\      "x y \""
-      \\      false
-      \\      32
-      \\      0.35
-      \\      unsigned
-      \\      "hello world"
-      \\      "hello world 2"
-      \\      1
-      \\      2
-      \\      3
-      \\      4
-      \\      9
-      \\      6
-      \\      5
-      \\      nil
-      \\      1234
-      \\      x
-      \\      y
-      \\      1 (a asdf) (b 123) (c 12355) (d multiple-words))
-      \\)
-    ;
+    const expected = @embedFile("test/test2.sx");
 
     var buf: [4096]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
@@ -350,8 +375,94 @@ test "write struct with inline fields" {
     try expectEqualStrings(expected, w.buffered());
 }
 
+fn expectEqualStrings(expected: []const u8, actual: []const u8) !void {
+    var i_expected: usize = 0;
+    var i_actual: usize = 0;
+
+    while (true) {
+        while (i_expected < expected.len and expected[i_expected] == '\r') i_expected += 1;
+        while (i_actual < actual.len and actual[i_actual] == '\r') i_actual += 1;
+        if (i_expected >= expected.len or i_actual >= actual.len) break;
+
+        if (expected[i_expected] != actual[i_actual]) break;
+
+        i_expected += 1;
+        i_actual += 1;
+    }
+
+    if (i_expected < expected.len or i_actual < actual.len) {
+        if (@inComptime()) {
+            @compileError(std.fmt.comptimePrint("\nexpected:\n{s}\nfound:\n{s}\ndifference starts at index {d}/{d}", .{
+                expected, actual, i_expected, i_actual,
+            }));
+        }
+        print("\n====== expected this output: =========\n", .{});
+        printWithVisibleNewlines(expected);
+        print("\n======== instead found this: =========\n", .{});
+        printWithVisibleNewlines(actual);
+        print("\n======================================\n", .{});
+
+        var diff_line_number: usize = 1;
+        for (expected[0..i_expected]) |value| {
+            if (value == '\n') diff_line_number += 1;
+        }
+        print("First difference occurs on line {d}:\n", .{diff_line_number});
+
+        print("expected:\n", .{});
+        printIndicatorLine(expected, i_expected);
+
+        print("found:\n", .{});
+        printIndicatorLine(actual, i_actual);
+
+        return error.TestExpectedEqual;
+    }
+}
+
+fn printIndicatorLine(source: []const u8, indicator_index: usize) void {
+    const line_begin_index = if (std.mem.lastIndexOfScalar(u8, source[0..indicator_index], '\n')) |line_begin|
+        line_begin + 1
+    else
+        0;
+    const line_end_index = if (std.mem.findScalar(u8, source[indicator_index..], '\n')) |line_end|
+        (indicator_index + line_end)
+    else
+        source.len;
+
+    printLine(source[line_begin_index..line_end_index]);
+    for (line_begin_index..indicator_index) |_|
+        print(" ", .{});
+    if (indicator_index >= source.len)
+        print("^ (end of string)\n", .{})
+    else
+        print("^ ('\\x{x:0>2}')\n", .{source[indicator_index]});
+}
+
+fn printWithVisibleNewlines(source: []const u8) void {
+    var i: usize = 0;
+    while (std.mem.findScalar(u8, source[i..], '\n')) |nl| : (i += nl + 1) {
+        printLine(source[i..][0..nl]);
+    }
+    print("{s}␃\n", .{source[i..]}); // End of Text symbol (ETX)
+}
+
+fn printLine(line: []const u8) void {
+    if (line.len != 0) switch (line[line.len - 1]) {
+        ' ', '\t' => return print("{s}⏎\n", .{line}), // Return symbol
+        else => {},
+    };
+    print("{s}\n", .{line});
+}
+
+fn print(comptime fmt: []const u8, args: anytype) void {
+    if (@inComptime()) {
+        @compileError(std.fmt.comptimePrint(fmt, args));
+    } else if (std.testing.backend_can_print) {
+        std.debug.print(fmt, args);
+    }
+}
+
 const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
-const expectEqualStrings = std.testing.expectEqualStrings;
+
 const sx = @import("sx");
 const std = @import("std");

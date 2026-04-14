@@ -1,0 +1,26 @@
+(box my-box
+   (dimensions 4.3 7 14)
+   (color red)
+   (contents
+      42
+      "Big Phil's To Do List:\n - paint it black\n - clean up around the house\n"
+      "x y \""
+      false
+      32
+      0.35
+      unsigned
+      "hello world"
+      "hello world 2"
+      1
+      2
+      3
+      4
+      9
+      6
+      5
+      nil
+      1234
+      x
+      y
+      1 (a asdf) (b 123) (c 12355) (d multiple-words))
+)

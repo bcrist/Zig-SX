@@ -98,28 +98,12 @@ try writer.string(
 try writer.done();
 ```
 
-## Building
-This library is designed to be used with the Zig package manager.  To use it, add a `build.zig.zon` file next to your `build.zig` file:
-```zig
-.{
-    .name = "Your Project Name",
-    .version = "0.0.0",
-    .dependencies = .{
-        .@"Zig-SX" = .{
-            .url = "https://github.com/bcrist/Zig-SX/archive/xxxxxx.tar.gz",
-        },
-    },
-}
+## Usage
+Add dependency with:
+```bash
+zig fetch --save git+https://codeberg.org/bcrist/zig-sx
 ```
-Replace `xxxxxx` with the full commit hash for the version of the library you want to use.  The first time you run `zig build` after adding this, it will tell you a hash to put after `.url = ...`.  This helps zig ensure that the file wasn't corrupted during download, and that the URL hasn't been hijacked.
-Then in your `build.zig` file you can get a reference to the package:
+Then you can reference it in `build.zig` with:
 ```zig
-const zig_sx = b.dependency("Zig-SX", .{});
-const exe = b.addExecutable(.{
-    .name = "my_exe_name",
-    .root_source_file = .{ .path = "my_main_file.zig" },
-    .target = b.standardTargetOptions(.{}),
-    .optimize = b.standardOptimizeOption(.{}),
-});
-exe.addModule("sx", zig_sx.module("sx"));
+b.dependency("sx", .{}).module("sx")
 ```

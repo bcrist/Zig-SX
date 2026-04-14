@@ -1249,9 +1249,12 @@ pub const Token_Context = struct {
         }
     }
 
-    pub fn print_for_file(self: Token_Context, source: *std.fs.File, w: *std.Io.Writer, comptime max_line_width: usize) !void {
-        const originalPos = try source.getPos();
-        errdefer source.seekTo(originalPos) catch {}; // best effort not to change file position in case of error
+    pub fn print_for_file(self: Token_Context, source: *std.Io.File.Reader, w: *std.Io.Writer, comptime max_line_width: usize) !void {
+        const original_pos = source.logicalPos();
+        errdefer {
+            source.interface.tossBuffered();
+            source.seekTo(original_pos) catch {}; // best effort not to change file position in case of error
+        }
 
         var offset = self.prev_line_offset;
         var line_number = self.start_line_number;
@@ -1259,45 +1262,51 @@ pub const Token_Context = struct {
             line_number -= 1;
         }
 
+        source.interface.tossBuffered();
         try source.seekTo(self.prev_line_offset);
-        var br = std.Io.bufferedReader(source.reader());
-        const file_reader = br.reader();
         var line_buf: [max_line_width + 1]u8 = undefined;
         var line_length: usize = undefined;
-        while (try read_file_line(file_reader, &line_buf, &line_length)) |line| {
-            if (std.mem.endsWith(u8, line, "\r")) {
-                try print_line(self, w, line_number, offset, line[0..line.len - 1], max_line_width);
-            } else {
-                try print_line(self, w, line_number, offset, line, max_line_width);
-            }
+        while (try read_file_line(&source.interface, &line_buf, &line_length)) |line| {
+            try print_line(self, w, line_number, offset, line, max_line_width);
 
             if (offset >= self.end_offset) {
                 break;
             }
 
             line_number += 1;
-            offset += line_length + 1;
+            offset += line_length;
         }
 
-        try source.seekTo(originalPos);
+        source.interface.tossBuffered();
+        try source.seekTo(original_pos);
     }
 
     fn read_file_line(r: *std.Io.Reader, buffer: []u8, line_length: *usize) !?[]u8 {
         var bw = std.Io.Writer.fixed(buffer);
-        r.streamDelimiter(bw, '\n') catch |e| switch (e) {
+        _ = r.streamDelimiter(&bw, '\n') catch |e| switch (e) {
             error.WriteFailed => {
                 var length = buffer.len;
 
                 length += try r.discardDelimiterExclusive('\n');
+                _ = r.takeByte() catch {};
 
-                line_length.* = length;
+                line_length.* = length + 1;
                 return buffer;
             },
-            error.EndOfStream => {},
+            error.EndOfStream => {
+                const line = bw.buffered();
+                line_length.* = line.len;
+                return line;
+            },
             else => return e,
         };
-        line_length.* = bw.buffered().len;
-        return bw.buffered();
+        _ = r.takeByte() catch {};
+        var line = bw.buffered();
+        line_length.* = line.len + 1;
+        if (std.mem.endsWith(u8, line, "\r")) {
+            line = line[0 .. line.len - 1];
+        }
+        return line;
     }
 
     fn print_line(self: Token_Context, w: *std.Io.Writer, line_number: usize, offset: usize, line: []const u8, max_line_width: usize) !void {
