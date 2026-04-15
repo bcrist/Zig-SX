@@ -2,7 +2,7 @@
     .name = .sx,
     .fingerprint = 0x1b15c1c46a1bf8d2,
     .version = "1.2.1",
-    .minimum_zig_version = "0.16.0-dev.2626+0e3c6514a",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",
