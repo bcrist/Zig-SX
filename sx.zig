@@ -216,10 +216,10 @@ pub const Writer = struct {
 
                 const was_compact = self.is_compact();
 
-                inline for (info.fields) |field| {
-                    if (field.type != void and std.mem.eql(u8, tag_name, field.name)) {
-                        self.set_compact(if (@hasDecl(compact, field.name)) @field(compact, field.name) else was_compact);
-                        try self.object_child(@field(obj, field.name), false, field.name, Context);
+                inline for (info.field_names, info.field_types) |field_name, field_type| {
+                    if (field_type != void and std.mem.eql(u8, tag_name, field_name)) {
+                        self.set_compact(if (@hasDecl(compact, field_name)) @field(compact, field_name) else was_compact);
+                        try self.object_child(@field(obj, field_name), false, field_name, Context);
                     }
                 }
 
@@ -241,13 +241,13 @@ pub const Writer = struct {
                     }
                 }
 
-                inline for (info.fields) |field| {
-                    if (!field.is_comptime) {
+                inline for (info.field_names, info.field_attrs) |field_name, field_attrs| {
+                    if (!field_attrs.@"comptime") {
                         if (!inline for (inline_fields) |inline_field_name| {
-                            if (comptime std.mem.eql(u8, inline_field_name, field.name)) break true;
+                            if (comptime std.mem.eql(u8, inline_field_name, field_name)) break true;
                         } else false) {
-                            self.set_compact(if (@hasDecl(compact, field.name)) @field(compact, field.name) else was_compact);
-                            try self.object_child(@field(obj, field.name), true, field.name, Context);
+                            self.set_compact(if (@hasDecl(compact, field_name)) @field(compact, field_name) else was_compact);
+                            try self.object_child(@field(obj, field_name), true, field_name, Context);
                         }
                     }
                 }
@@ -1037,10 +1037,10 @@ pub const Reader = struct {
             .@"union" => |info| blk: {
                 std.debug.assert(info.tag_type != null);
                 var obj: ?T = null;
-                inline for (info.fields) |field| {
-                    if (obj == null and try self.string(field.name)) {
-                        const value = try self.require_object_child(arena, field.type, false, field.name, Context);
-                        obj = @unionInit(T, field.name, value);
+                inline for (info.field_names, info.field_types) |field_name, field_type| {
+                    if (obj == null and try self.string(field_name)) {
+                        const value = try self.require_object_child(arena, field_type, false, field_name, Context);
+                        obj = @unionInit(T, field_name, value);
                     }
                 }
                 if (obj) |o| break :blk o;
@@ -1048,35 +1048,35 @@ pub const Reader = struct {
             },
             .@"struct" => |info| blk: {
                 var temp: ArrayList_Struct(T) = .{};
-                defer inline for (@typeInfo(@TypeOf(temp)).@"struct".fields) |field| {
-                    @field(temp, field.name).deinit(self.gpa);
+                defer inline for (@typeInfo(@TypeOf(temp)).@"struct".field_names) |field_name| {
+                    @field(temp, field_name).deinit(self.gpa);
                 };
 
                 try self.parse_struct_fields(arena, T, &temp, Context);
 
                 var obj: T = .{};
-                inline for (info.fields) |field| {
-                    const arraylist_ptr = &@field(temp, field.name);
+                inline for (info.field_names, info.field_types) |field_name, field_type| {
+                    const arraylist_ptr = &@field(temp, field_name);
                     if (arraylist_ptr.items.len > 0) {
                         const Unwrapped = @TypeOf(arraylist_ptr.items[0]);
-                        if (field.type == Unwrapped) {
-                            @field(obj, field.name) = arraylist_ptr.items[0];
-                        } else switch (@typeInfo(field.type)) {
+                        if (field_type == Unwrapped) {
+                            @field(obj, field_name) = arraylist_ptr.items[0];
+                        } else switch (@typeInfo(field_type)) {
                             .array => |arr_info| {
-                                const slice: []arr_info.child = &@field(obj, field.name);
+                                const slice: []arr_info.child = &@field(obj, field_name);
                                 @memcpy(slice.data, arraylist_ptr.items);
                             },
                             .pointer => |ptr_info| {
                                 if (ptr_info.size == .slice) {
-                                    @field(obj, field.name) = try arena.dupe(Unwrapped, arraylist_ptr.items);
+                                    @field(obj, field_name) = try arena.dupe(Unwrapped, arraylist_ptr.items);
                                 } else {
                                     const ptr = try arena.create(ptr_info.child);
                                     ptr.* = arraylist_ptr.items[0];
-                                    @field(obj, field.name) = ptr;
+                                    @field(obj, field_name) = ptr;
                                 }
                             },
                             .optional => {
-                                @field(obj, field.name) = arraylist_ptr.items[0];
+                                @field(obj, field_name) = arraylist_ptr.items[0];
                             },
                             else => unreachable,
                         }
@@ -1099,15 +1099,15 @@ pub const Reader = struct {
     }
 
     fn parse_struct_fields(self: *Reader, arena: std.mem.Allocator, comptime T: type, temp: *ArrayList_Struct(T), comptime Context: type) !void {
-        const struct_fields = @typeInfo(T).@"struct".fields;
+        const struct_info = @typeInfo(T).@"struct";
 
         const has_inline_fields = @hasDecl(Context, "inline_fields") and !@hasField(T, "inline_fields");
         const inline_fields: []const []const u8 = if (has_inline_fields) @field(Context, "inline_fields") else &.{};
 
         inline for (inline_fields) |field_name| {
             const Unwrapped = @TypeOf(@field(temp, field_name).items[0]);
-            const field = struct_fields[std.meta.fieldIndex(T, field_name).?];
-            const max_children = max_child_items(field.type);
+            const field_type = struct_info.field_types[std.meta.fieldIndex(T, field_name).?];
+            const max_children = max_child_items(field_type);
 
             var i: usize = 0;
             while (max_children == null or i < max_children.?) : (i += 1) {
@@ -1121,15 +1121,15 @@ pub const Reader = struct {
 
         while (true) {
             var found_field = false;
-            inline for (struct_fields) |field| {
-                if (!field.is_comptime) {
-                    const arraylist_ptr = &@field(temp.*, field.name);
-                    const check_this_field = if (max_child_items(field.type)) |max| arraylist_ptr.items.len < max else true;
+            inline for (struct_info.field_names, struct_info.field_types, struct_info.field_attrs) |field_name, field_type, field_attrs| {
+                if (!field_attrs.@"comptime") {
+                    const arraylist_ptr = &@field(temp.*, field_name);
+                    const check_this_field = if (max_child_items(field_type)) |max| arraylist_ptr.items.len < max else true;
                     if (check_this_field) {
-                        const Unwrapped = @TypeOf(@field(temp, field.name).items[0]);
-                        try @field(temp.*, field.name).ensureUnusedCapacity(self.gpa, 1);
-                        if (try self.object_child(arena, Unwrapped, true, field.name, Context)) |raw| {
-                            @field(temp.*, field.name).appendAssumeCapacity(raw);
+                        const Unwrapped = @TypeOf(@field(temp, field_name).items[0]);
+                        try @field(temp.*, field_name).ensureUnusedCapacity(self.gpa, 1);
+                        if (try self.object_child(arena, Unwrapped, true, field_name, Context)) |raw| {
+                            @field(temp.*, field_name).appendAssumeCapacity(raw);
                             found_field = true;
                         }
                     }
@@ -1395,20 +1395,18 @@ fn ArrayList_Struct(comptime S: type) type {
     return comptime blk: {
         const info = @typeInfo(S).@"struct";
 
-        var field_names: [info.fields.len][]const u8 = undefined;
-        var field_types: [info.fields.len]type = undefined;
-        var field_attrs: [info.fields.len]std.builtin.Type.StructField.Attributes = undefined;
-        for (&field_names, &field_types, &field_attrs, info.fields) |*field_name, *field_type, *field_attr, field| {
-            const ArrayList_Field = ArrayListify(field.type);
-            field_name.* = field.name;
-            field_type.* = ArrayList_Field;
-            field_attr.* = .{
+        var field_types: [info.field_names.len]type = undefined;
+        var field_attrs: [info.field_names.len]std.builtin.Type.Struct.FieldAttributes = undefined;
+        for (&field_types, &field_attrs, info.field_types) |*out_type, *out_attrs, in_type| {
+            const ArrayList_Field = ArrayListify(in_type);
+            out_type.* = ArrayList_Field;
+            out_attrs.* = .{
                 .@"align" = @alignOf(ArrayList_Field),
                 .default_value_ptr = &@as(ArrayList_Field, .empty),
             };
         }
 
-        break :blk @Struct(.auto, null, &field_names, &field_types, &field_attrs);
+        break :blk @Struct(.auto, null, info.field_names, &field_types, &field_attrs);
     };
 }
 
@@ -1461,12 +1459,12 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
     // TODO The '100' here is arbitrary and should be increased when possible:
     // - https://github.com/ziglang/zig/issues/4055
     // - https://github.com/ziglang/zig/issues/3863
-    if (@typeInfo(T).@"enum".fields.len <= 100) {
+    if (@typeInfo(T).@"enum".field_names.len <= 100) {
         const kvs = comptime build_kvs: {
             const EnumKV = struct { []const u8, T };
-            var kvs_array: [@typeInfo(T).@"enum".fields.len]EnumKV = undefined;
-            for (@typeInfo(T).@"enum".fields, 0..) |enumField, i| {
-                kvs_array[i] = .{ swap_underscores_and_dashes_comptime(enumField.name), @field(T, enumField.name) };
+            var kvs_array: [@typeInfo(T).@"enum".field_names.len]EnumKV = undefined;
+            for (@typeInfo(T).@"enum".field_names, 0..) |enum_field, i| {
+                kvs_array[i] = .{ swap_underscores_and_dashes_comptime(enum_field), @field(T, enum_field) };
             }
             break :build_kvs kvs_array[0..];
         };
@@ -1478,9 +1476,9 @@ fn string_to_enum(comptime T: type, str: []const u8) ?T {
 
         return map.get(str);
     } else {
-        inline for (@typeInfo(T).@"enum".fields) |enumField| {
-            if (std.mem.eql(u8, str, swap_underscores_and_dashes_comptime(enumField.name))) {
-                return @field(T, enumField.name);
+        inline for (@typeInfo(T).@"enum".field_names) |enum_field| {
+            if (std.mem.eql(u8, str, swap_underscores_and_dashes_comptime(enum_field))) {
+                return @field(T, enum_field);
             }
         }
         return null;
