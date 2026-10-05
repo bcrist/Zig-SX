@@ -80,7 +80,7 @@ test "sx.Reader" {
     try expectEqual(true, try reader.require_object(std.testing.allocator, bool, Ctx));
     try expectEqual(0x20, try reader.require_object(std.testing.allocator, u8, Ctx));
     try expectEqual(0.35, try reader.require_object(std.testing.allocator, f64, Ctx));
-    try expectEqual(std.builtin.Signedness.unsigned, try reader.require_object(std.testing.allocator, std.builtin.Signedness, Ctx));
+    try expectEqual(std.lang.Signedness.unsigned, try reader.require_object(std.testing.allocator, std.lang.Signedness, Ctx));
 
     const xyz = try reader.require_object(std.testing.allocator, []const u8, Ctx);
     defer std.testing.allocator.free(xyz);
@@ -244,7 +244,7 @@ test "sx.Writer" {
     try writer.object(false, Ctx);
     try writer.object(@as(u8, 0x20), Ctx);
     try writer.object(@as(f64, 0.35), Ctx);
-    try writer.object(std.builtin.Signedness.unsigned, Ctx);
+    try writer.object(std.lang.Signedness.unsigned, Ctx);
 
     const xyz: []const u8 = "hello world";
     try writer.object(xyz, Ctx);

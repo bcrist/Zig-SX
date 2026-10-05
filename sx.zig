@@ -1387,7 +1387,7 @@ fn ArrayList_Struct(comptime S: type) type {
         const info = @typeInfo(S).@"struct";
 
         var field_types: [info.field_names.len]type = undefined;
-        var field_attrs: [info.field_names.len]std.builtin.Type.Struct.FieldAttributes = undefined;
+        var field_attrs: [info.field_names.len]std.lang.Type.Struct.FieldAttributes = undefined;
         for (&field_types, &field_attrs, info.field_types) |*out_type, *out_attrs, in_type| {
             const ArrayList_Field = ArrayListify(in_type);
             out_type.* = ArrayList_Field;
