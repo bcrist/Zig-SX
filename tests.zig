@@ -103,10 +103,7 @@ test "sx.Reader" {
     opt = try reader.require_object(std.testing.allocator, ?u32, Ctx);
     try expectEqual(1234, opt);
 
-    const U = union (enum) {
-        x,
-        y: u32
-    };
+    const U = union(enum) { x, y: u32 };
     var u = try reader.require_object(std.testing.allocator, U, Ctx);
     try expectEqual(.x, u);
     u = try reader.require_object(std.testing.allocator, U, Ctx);
@@ -258,17 +255,14 @@ test "sx.Writer" {
     const slice: []const u32 = &.{ 1, 2, 3, 4 };
     try writer.object(slice, Ctx);
 
-    try writer.object([_]u4 { 9, 6, 5 }, Ctx);
+    try writer.object([_]u4{ 9, 6, 5 }, Ctx);
 
     var opt: ?u32 = null;
     try writer.object(opt, Ctx);
     opt = 1234;
     try writer.object(opt, Ctx);
 
-    const U = union (enum) {
-        x,
-        y: u32
-    };
+    const U = union(enum) { x, y: u32 };
     var u: U = .x;
     try writer.object(u, Ctx);
     u = .{ .y = 1 };
@@ -300,7 +294,6 @@ test "sx.Writer" {
     try expectEqualStrings(expected, w.buffered());
 }
 
-
 const Inline_Fields_Struct = struct {
     a: []const u8 = "",
     inline_items: []const []const u8 = &.{},
@@ -320,7 +313,7 @@ test "read struct with inline fields" {
         \\(multi 7)
         \\(multi 1234)
         \\
-        ;
+    ;
     var r = std.Io.Reader.fixed(str);
     var reader = sx.reader(std.testing.allocator, &r);
     defer reader.deinit();
@@ -328,7 +321,7 @@ test "read struct with inline fields" {
     const result = try reader.require_object(std.testing.allocator, Inline_Fields_Struct, Inline_Fields_Ctx);
     defer std.testing.allocator.free(result.a);
     defer std.testing.allocator.free(result.inline_items);
-    defer for(result.inline_items) |item| {
+    defer for (result.inline_items) |item| {
         std.testing.allocator.free(item);
     };
     defer std.testing.allocator.free(result.multi);
@@ -346,7 +339,7 @@ test "read struct with inline fields" {
 }
 
 test "write struct with inline fields" {
-     const expected =
+    const expected =
         \\asdf
         \\abc
         \\123
@@ -354,7 +347,7 @@ test "write struct with inline fields" {
         \\(multi 1)
         \\(multi 7)
         \\(multi 1234)
-        ;
+    ;
 
     const obj: Inline_Fields_Struct = .{
         .a = "asdf",

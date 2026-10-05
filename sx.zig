@@ -143,10 +143,10 @@ pub const Writer = struct {
     pub fn float(self: *Writer, val: anytype) !void {
         try self.spacing();
         switch (@typeInfo(@TypeOf(val))) {
-            .@"comptime_float", .float => {
+            .comptime_float, .float => {
                 try self.inner.printFloat(val, .{});
             },
-            .@"comptime_int", .int => {
+            .comptime_int, .int => {
                 try self.inner.printFloat(@as(f64, @floatFromInt(val)), .{});
             },
             else => @compileError("Expected float"),
@@ -172,7 +172,7 @@ pub const Writer = struct {
     pub fn object(self: *Writer, obj: anytype, comptime Context: type) !void {
         const T = @TypeOf(obj);
         switch (@typeInfo(T)) {
-            .@"bool" => try self.boolean(obj),
+            .bool => try self.boolean(obj),
             .int => try self.int(obj, 10),
             .float => try self.float(obj),
             .@"enum" => try self.tag(obj),
@@ -260,13 +260,13 @@ pub const Writer = struct {
     }
 
     fn object_child(self: *Writer, child: anytype, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) !void {
-        const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
+        const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct {};
         switch (@typeInfo(@TypeOf(Child_Context))) {
             .@"fn" => {
                 log.debug("Writing field {s} using function {s}", .{ field_name, @typeName(@TypeOf(Child_Context)) });
                 try Child_Context(child, self, wrap);
             },
-            .@"type" => {
+            .type => {
                 if (Child_Context == void) return; // ignore field
                 switch (@typeInfo(@TypeOf(child))) {
                     .pointer => |info| {
@@ -316,7 +316,7 @@ pub const Writer = struct {
                     .pointer => |info| {
                         if (info.size == .slice) {
                             if (wrap) try self.expression(field_name);
-                            try self.print_value("{" ++ Child_Context ++ "}", .{ child });
+                            try self.print_value("{" ++ Child_Context ++ "}", .{child});
                             if (wrap) try self.close();
                         } else {
                             try self.object_child(child.*, wrap, field_name, Parent_Context);
@@ -329,7 +329,7 @@ pub const Writer = struct {
                     },
                     else => {
                         if (wrap) try self.expression(field_name);
-                        try self.print_value("{" ++ Child_Context ++ "}", .{ child });
+                        try self.print_value("{" ++ Child_Context ++ "}", .{child});
                         if (wrap) try self.close();
                     },
                 }
@@ -412,7 +412,6 @@ pub const Writer = struct {
         try self.spacing();
         try self.inner.print(format, args);
     }
-
 };
 
 fn write_escaped(w: *std.Io.Writer, bytes: []const u8) std.Io.Writer.Error!usize {
@@ -449,13 +448,7 @@ fn write_escaped(w: *std.Io.Writer, bytes: []const u8) std.Io.Writer.Error!usize
 }
 
 pub const Reader = struct {
-    const State = enum(u8) {
-        unknown = 0,
-        open = 1,
-        close = 2,
-        val = 3,
-        eof = 4
-    };
+    const State = enum(u8) { unknown = 0, open = 1, close = 2, val = 3, eof = 4 };
 
     inner: *std.Io.Reader,
     next_byte: ?u8,
@@ -537,7 +530,7 @@ pub const Reader = struct {
                     self.put_back_byte(b);
                     return;
                 },
-                else => {}
+                else => {},
             }
         }
     }
@@ -979,14 +972,13 @@ pub const Reader = struct {
         return try self.any_unsigned(T, radix) orelse error.SExpressionSyntaxError;
     }
 
-
     pub fn object(self: *Reader, arena: std.mem.Allocator, comptime T: type, comptime Context: type) !?T {
         const obj: T = switch (@typeInfo(T)) {
-            .@"bool" => if (try self.any_boolean()) |val| val else return null,
+            .bool => if (try self.any_boolean()) |val| val else return null,
             .int => if (try self.any_int(T, 0)) |val| val else return null,
             .float => if (try self.any_float(T)) |val| val else return null,
             .@"enum" => if (try self.any_enum(T)) |val| val else return null,
-            .@"void" => {},
+            .void => {},
             .pointer => |info| blk: {
                 if (info.size == .slice) {
                     if (info.child == u8) {
@@ -1141,10 +1133,10 @@ pub const Reader = struct {
     }
 
     fn object_child(self: *Reader, arena: std.mem.Allocator, comptime T: type, wrap: bool, comptime field_name: []const u8, comptime Parent_Context: type) !?T {
-        const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct{};
+        const Child_Context = if (@hasDecl(Parent_Context, field_name)) @field(Parent_Context, field_name) else struct {};
         switch (@typeInfo(@TypeOf(Child_Context))) {
             .@"fn" => return Child_Context(arena, self, wrap),
-            .@"type" => {
+            .type => {
                 if (wrap) {
                     if (try self.expression(field_name)) {
                         if (Child_Context == void) {
@@ -1210,14 +1202,13 @@ pub const Reader = struct {
         if (self.state == .unknown) {
             try self.read();
         }
-        return Token_Context {
+        return Token_Context{
             .prev_line_offset = self.token_start_ctx.prev_line_offset,
             .start_line_number = self.token_start_ctx.line_number,
             .start_offset = self.token_start_ctx.offset,
             .end_offset = self.ctx.offset,
         };
     }
-
 };
 
 pub const Token_Context = struct {
@@ -1235,7 +1226,7 @@ pub const Token_Context = struct {
         var iter = std.mem.splitScalar(u8, source[offset..], '\n');
         while (iter.next()) |line| {
             if (std.mem.endsWith(u8, line, "\r")) {
-                try print_line(self, w, line_number, offset, line[0..line.len - 1], max_line_width);
+                try print_line(self, w, line_number, offset, line[0 .. line.len - 1], max_line_width);
             } else {
                 try print_line(self, w, line_number, offset, line, max_line_width);
             }
@@ -1315,7 +1306,7 @@ pub const Token_Context = struct {
         const end_of_line = offset + line.len;
         var end_of_display = end_of_line;
         if (line.len > max_line_width) {
-            try w.writeAll(line[0..max_line_width - 3]);
+            try w.writeAll(line[0 .. max_line_width - 3]);
             try w.writeAll("...\n");
             end_of_display = offset + max_line_width - 3;
         } else {
@@ -1363,11 +1354,11 @@ pub const Token_Context = struct {
 
     fn print_line_number(w: *std.Io.Writer, initial_line: usize, line: usize) !void {
         if (initial_line < 1000) {
-            try w.print("{:>4} |", .{ line });
+            try w.print("{:>4} |", .{line});
         } else if (initial_line < 100_000) {
-            try w.print("{:>6} |", .{ line });
+            try w.print("{:>6} |", .{line});
         } else {
-            try w.print("{:>8} |", .{ line });
+            try w.print("{:>8} |", .{line});
         }
     }
     fn print_line_number_padding(w: *std.Io.Writer, initial_line: usize) !void {
@@ -1437,7 +1428,7 @@ fn swap_underscores_and_dashes(str: []const u8, buf: []u8) []const u8 {
             else => c,
         };
     }
-    
+
     return buf[0..str.len];
 }
 
