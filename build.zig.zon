@@ -1,7 +1,7 @@
 .{
     .name = .sx,
     .fingerprint = 0x1b15c1c46a1bf8d2,
-    .version = "1.2.2",
+    .version = "1.2.3",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{

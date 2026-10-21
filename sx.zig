@@ -1402,7 +1402,7 @@ fn ArrayList_Struct(comptime S: type) type {
 }
 
 fn ArrayListify(comptime T: type) type {
-    return std.ArrayListUnmanaged(switch (@typeInfo(T)) {
+    return std.ArrayList(switch (@typeInfo(T)) {
         .pointer => |info| if (info.size == .slice and info.child == u8) T else info.child,
         .optional => |info| info.child,
         .array => |info| info.child,
